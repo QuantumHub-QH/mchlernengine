@@ -177,6 +177,225 @@ local function getAllAssetFiles()
 end
 
 -- =====================================================
+-- 2.5 DUAL DECOMPRESSION ENGINE (LZ4 + ZSTD PRO)
+-- =====================================================
+
+local bit32 = bit32 or {
+    band   = function(a, b) return a & b end,
+    rshift = function(a, n) return a >> n end,
+    lshift = function(a, n) return a << n end,
+    bor    = function(a, b) return a | b end,
+}
+local band, rshift, lshift, bor = bit32.band, bit32.rshift, bit32.lshift, bit32.bor
+local string_byte = string.byte
+local string_char = string.char
+local table_concat = table.concat
+
+local CHAR_MAP = table.create and table.create(256) or {}
+for i = 0, 255 do
+    CHAR_MAP[i] = string_char(i)
+end
+
+-- Little Endian Uint32 Reader (100% Portable)
+local function readU32LE(str, idx)
+    local b1, b2, b3, b4 = string_byte(str, idx, idx + 3)
+    if not b4 then return 0 end
+    return b1 + lshift(b2, 8) + lshift(b3, 16) + lshift(b4, 24)
+end
+
+-- [ENGINE 1: LZ4 BLOCK DECOMPRESSOR] (Pure Luau high performance)
+local function decompressLZ4(data)
+    if not data or #data == 0 then return "" end
+    local out = {}
+    local outNext = 1
+    local dataLen = #data
+    local pos = 1
+
+    while pos <= dataLen do
+        local token = string_byte(data, pos)
+        pos = pos + 1
+
+        -- Literals
+        local literalCount = rshift(token, 4)
+        if literalCount == 15 then
+            repeat
+                local lenPart = string_byte(data, pos)
+                pos = pos + 1
+                literalCount = literalCount + lenPart
+            until lenPart < 255
+        end
+
+        for i = 0, literalCount - 1 do
+            out[outNext + i] = CHAR_MAP[string_byte(data, pos + i)]
+        end
+        outNext = outNext + literalCount
+        pos = pos + literalCount
+
+        if pos > dataLen then break end
+
+        -- Match
+        local matchLength = band(token, 15)
+        local offsetA, offsetB = string_byte(data, pos, pos + 1)
+        local matchOffset = offsetA + lshift(offsetB, 8)
+        pos = pos + 2
+
+        if matchLength == 15 then
+            repeat
+                local lenPart = string_byte(data, pos)
+                pos = pos + 1
+                matchLength = matchLength + lenPart
+            until lenPart < 255
+        end
+        matchLength = matchLength + 4
+
+        for i = 0, matchLength - 1 do
+            out[outNext + i] = out[outNext - matchOffset + i]
+        end
+        outNext = outNext + matchLength
+    end
+
+    return table_concat(out)
+end
+
+-- Base64 Encoder for ZSTD Native Bridge
+local B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local function toBase64(data)
+    local out = {}
+    local len = #data
+    for i = 1, len, 3 do
+        local a = string_byte(data, i)
+        local b = (i + 1 <= len) and string_byte(data, i + 1) or 0
+        local c = (i + 2 <= len) and string_byte(data, i + 2) or 0
+        local n = bor(lshift(a, 16), lshift(b, 8), c)
+
+        local c1 = band(rshift(n, 18), 63)
+        local c2 = band(rshift(n, 12), 63)
+        local c3 = band(rshift(n, 6), 63)
+        local c4 = band(n, 63)
+
+        table.insert(out, B64_CHARS:sub(c1 + 1, c1 + 1))
+        table.insert(out, B64_CHARS:sub(c2 + 1, c2 + 1))
+        table.insert(out, (i + 1 <= len) and B64_CHARS:sub(c3 + 1, c3 + 1) or "=")
+        table.insert(out, (i + 2 <= len) and B64_CHARS:sub(c4 + 1, c4 + 1) or "=")
+    end
+    return table_concat(out)
+end
+
+-- [ENGINE 2: ZSTD DECOMPRESSOR] (Roblox Native C++ Bridge via HttpService JSON buffer)
+local function decompressZSTD(payload)
+    if not payload or #payload == 0 then return "" end
+    local ok, res = pcall(function()
+        local b64 = toBase64(payload)
+        local json = '{"m": null, "t": "buffer", "zbase64": "' .. b64 .. '"}'
+        local decoded = HttpService:JSONDecode(json)
+        if typeof(decoded) == "buffer" and buffer and buffer.tostring then
+            return buffer.tostring(decoded)
+        end
+        return tostring(decoded)
+    end)
+    if ok and res and #res > 0 then
+        return res
+    end
+    return payload
+end
+
+-- [DUAL CHUNK DECOMPRESSOR] Auto-detects ZSTD (0xFD2FB528) vs LZ4
+local function decompressChunk(payload, uncompLen)
+    if not payload or #payload == 0 then return "" end
+    -- Zstandard Magic Number: 0xFD2FB528 (\x28\xb5\x2f\xfd)
+    if #payload >= 4 and payload:sub(1, 4) == "\x28\xb5\x2f\xfd" then
+        local okZ, resZ = pcall(decompressZSTD, payload)
+        if okZ and resZ and #resZ > 0 then
+            return resZ
+        end
+    end
+
+    -- Default: LZ4 Block Decompressor
+    local okL, resL = pcall(decompressLZ4, payload)
+    if okL and resL and #resL > 0 then
+        return resL
+    end
+    return payload
+end
+
+-- [BINARY CHUNK SCRIPT RECOVERY] Unpacks raw <roblox! binary file PROP chunks
+local function parseBinarySources(raw)
+    local sources = {}
+    local classNames = {} -- class_id -> list of instance names
+
+    if not raw or #raw < 32 or raw:sub(1, 8) ~= "<roblox!" then
+        return sources
+    end
+
+    local pos = 33 -- Skip header (16) + class/instance counts (8) + reserved (8)
+    local rawLen = #raw
+
+    while pos + 16 <= rawLen do
+        local cname = raw:sub(pos, pos + 3)
+        local c_len = readU32LE(raw, pos + 4)
+        local u_len = readU32LE(raw, pos + 8)
+        pos = pos + 16
+
+        if pos + c_len - 1 > rawLen then break end
+        local payload = raw:sub(pos, pos + c_len - 1)
+        pos = pos + c_len
+
+        if cname == "PROP" then
+            local decomp = (c_len > 0) and decompressChunk(payload, u_len) or payload
+            if #decomp >= 8 then
+                local class_id = readU32LE(decomp, 1)
+                local p_len = readU32LE(decomp, 5)
+                local p_name = decomp:sub(9, 9 + p_len - 1)
+
+                if p_name == "Name" then
+                    classNames[class_id] = classNames[class_id] or {}
+                    local offset = 9 + p_len + 1 -- skip p_type byte
+                    while offset + 4 <= #decomp do
+                        local s_len = readU32LE(decomp, offset)
+                        offset = offset + 4
+                        if offset + s_len - 1 <= #decomp and s_len > 0 then
+                            local str = decomp:sub(offset, offset + s_len - 1)
+                            table.insert(classNames[class_id], str)
+                            offset = offset + s_len
+                        else
+                            break
+                        end
+                    end
+                elseif p_name == "Source" then
+                    local offset = 9 + p_len + 1 -- skip p_type byte
+                    local idx = 1
+                    local namesForClass = classNames[class_id] or {}
+                    while offset + 4 <= #decomp do
+                        local s_len = readU32LE(decomp, offset)
+                        offset = offset + 4
+                        if offset + s_len - 1 <= #decomp and s_len > 0 then
+                            local str = decomp:sub(offset, offset + s_len - 1)
+                            offset = offset + s_len
+
+                            local instName = namesForClass[idx]
+                            if instName then
+                                sources[instName] = str
+                                sources["Script:" .. instName] = str
+                                sources["LocalScript:" .. instName] = str
+                                sources["ModuleScript:" .. instName] = str
+                            end
+                            sources["SRC_INDEX_" .. idx] = str
+                            idx = idx + 1
+                        else
+                            break
+                        end
+                    end
+                end
+            end
+        elseif cname == "END\0" then
+            break
+        end
+    end
+
+    return sources
+end
+
+-- =====================================================
 -- 3. FORKT ENGINE INSERTION CORE (PORTED 1:1 DARI FORKT v3.8)
 -- =====================================================
 
@@ -373,10 +592,24 @@ local function runForktImport(fileData)
     local isPlace = fileData.fileType == "PLACE"
     local formatType = (fileData.path:lower():match("%.rbxlx?$") and "XML") or "BINARY"
 
-    -- Source extraction if binary format available
+    -- Dual Engine Source Extraction (XML + Binary LZ4/ZSTD Chunk Decompression)
     local rawSources = {}
+    local detectedEngine = "XML"
+
+    -- 1. XML Source extraction (untuk format XML .rbxmx / .rbxlx)
     for name, code in raw:gmatch('<string name="Name">([^<]+)</string>.-<ProtectedString name="Source"><%!%[CDATA%[(.-)%]%]></ProtectedString>') do
         rawSources[name] = code
+    end
+
+    -- 2. Dual Engine Binary Chunk Decompressor (LZ4 + ZSTD untuk format Binary <roblox!)
+    if raw:sub(1, 8) == "<roblox!" then
+        detectedEngine = "BINARY (LZ4/ZSTD)"
+        local binSources = parseBinarySources(raw)
+        for k, v in pairs(binSources) do
+            if not rawSources[k] then
+                rawSources[k] = v
+            end
+        end
     end
 
     -- URL Candidate array (getcustomasset + rbxasset)
@@ -433,7 +666,7 @@ local function runForktImport(fileData)
         return false, "0 objects loaded"
     end
 
-    return true, string.format("%d object(s) loaded [%s]", totalLoaded, formatType)
+    return true, string.format("%d object(s) loaded [%s | %s]", totalLoaded, formatType, detectedEngine)
 end
 
 -- =====================================================
@@ -754,7 +987,7 @@ local function createStatCard(posX, label, defVal)
 end
 
 local StatTotalLbl = createStatCard(0, "TOTAL ASSETS", "0")
-local StatReadyLbl = createStatCard(0.52, "CORE ENGINE", "FORKT NATIVE")
+local StatReadyLbl = createStatCard(0.52, "DECOMPRESSOR", "LZ4 + ZSTD PRO")
 
 -- Filter Bar (ALL, MODEL, PLACE)
 local CurrentFilter = "ALL"
@@ -865,6 +1098,36 @@ UserTag.Font = Enum.Font.Gotham
 UserTag.TextSize = 10
 UserTag.TextColor3 = Colors.TextMuted
 UserTag.TextXAlignment = Enum.TextXAlignment.Left
+
+local EngineCard = Instance.new("Frame", InfoView)
+EngineCard.Size = UDim2.new(1, 0, 0, 115)
+EngineCard.Position = UDim2.fromOffset(0, 120)
+EngineCard.BackgroundColor3 = Colors.Surface
+Instance.new("UICorner", EngineCard).CornerRadius = UDim.new(0, 10)
+local eStroke = Instance.new("UIStroke", EngineCard)
+eStroke.Color = Colors.Primary
+eStroke.Transparency = 0.6
+
+local EngineTitle = Instance.new("TextLabel", EngineCard)
+EngineTitle.Size = UDim2.new(1, -24, 0, 20)
+EngineTitle.Position = UDim2.fromOffset(14, 10)
+EngineTitle.BackgroundTransparency = 1
+EngineTitle.Text = "DECOMPRESSION & IMPORT SPECIFICATIONS"
+EngineTitle.Font = Enum.Font.GothamBold
+EngineTitle.TextSize = 11
+EngineTitle.TextColor3 = Colors.PrimaryLight
+EngineTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+local EngineDesc = Instance.new("TextLabel", EngineCard)
+EngineDesc.Size = UDim2.new(1, -24, 0, 75)
+EngineDesc.Position = UDim2.fromOffset(14, 32)
+EngineDesc.BackgroundTransparency = 1
+EngineDesc.Text = "• Core Insert: FORKT v3.8 PRO Native Architecture\n• Scanner: MCHLERN Engine (Multi-Path Throttling)\n• Decompressor 1: LZ4 Pure Luau Block Engine\n• Decompressor 2: ZSTD (Zstandard) Native C++ Bridge\n• Script Recovery: Dual Layer (XML + Binary Chunk Parser)"
+EngineDesc.Font = Enum.Font.GothamMedium
+EngineDesc.TextSize = 10
+EngineDesc.TextColor3 = Colors.TextMuted
+EngineDesc.TextXAlignment = Enum.TextXAlignment.Left
+EngineDesc.TextYAlignment = Enum.TextYAlignment.Top
 
 -- View 3: Settings
 local SettingsView = Instance.new("Frame", ContentContainer)
