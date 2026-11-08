@@ -6,24 +6,32 @@
 /_/   \___/_/|_|/_/|_| /_/    /___/_/  /_/_/   \____/_/  /___/   
                                                                   
    [*] Target      : Roblox Studio Lite (ScottSpiritWalker)
-   [*] Executor    : Delta / Android / PC
-   [*] Engine      : FORKT Hybrid Engine (Native Asset + SL Bridge)
-   [*] Status      : Clean, Keyless & Full Unlocked
+   [*] Executor    : Delta (Android / PC)
+   [*] Engine      : MCHLERN x FORKT v7.1 Hybrid Core
+   [*] Features    : Fixed Left Toggle, 100% Responsive Scanner,
+                     Lossless LZ4 Script Recovery, Auto-Anchor
 ============================================================
 ]]--
 
 -- 1. SERVICES & BASIC SETUP
-local Players = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
-local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Workspace = game:GetService("Workspace")
+local HttpService        = game:GetService("HttpService")
+local MarketplaceService = game:GetService("MarketplaceService")
+local TweenService       = game:GetService("TweenService")
+local UserInputService   = game:GetService("UserInputService")
+local RunService         = game:GetService("RunService")
+local CoreGui            = game:GetService("CoreGui")
+local Players            = game:GetService("Players")
+local ReplicatedStorage  = game:GetService("ReplicatedStorage")
+local Workspace          = game:GetService("Workspace")
 
-local LocalPlayer = Players.LocalPlayer
-if not LocalPlayer then
-    Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
-    LocalPlayer = Players.LocalPlayer
+if not game:IsLoaded() then
+    pcall(function() game.Loaded:Wait() end)
+end
+
+local LP = Players.LocalPlayer
+if not LP then
+    pcall(function() LP = Players.PlayerAdded:Wait() end)
+    LP = LP or Players.LocalPlayer
 end
 
 -- Resolve Safe CoreGui Container
@@ -32,16 +40,25 @@ local function getSafeGui()
         local ok, res = pcall(gethui)
         if ok and res then return res end
     end
-    local okCore, core = pcall(function() return game:GetService("CoreGui") end)
-    if okCore and core then return core end
-    return LocalPlayer:WaitForChild("PlayerGui")
+    local okCore = pcall(function() return CoreGui.Name end)
+    if okCore then return CoreGui end
+    return LP and (LP:FindFirstChild("PlayerGui") or LP:WaitForChild("PlayerGui", 5))
 end
 
 local GuiParent = getSafeGui()
 
+-- Executor Functions
+local httpRequest = request or http_request or (syn and syn.request) or (http and http.request)
+local clipFn      = setclipboard or toclipboard or (Clipboard and Clipboard.set)
+local customAsset = getcustomasset or getsynasset or nil
+local listfilesFn = listfiles or nil
+
+-- Memory Source Code Registry
+_G.MCHLERN_RAW_SOURCES = _G.MCHLERN_RAW_SOURCES or {}
+
 -- Studio Lite Remote & Folder Hooks
-local StudioLiteFolder = ReplicatedStorage:FindFirstChild("StudioLiteFolder")
-local ServerFunctions = StudioLiteFolder and StudioLiteFolder:FindFirstChild("ServerFunctions")
+local slFolder    = ReplicatedStorage:FindFirstChild("StudioLiteFolder")
+local serverFuncs = slFolder and slFolder:FindFirstChild("ServerFunctions")
 
 -- Theme Color Palette (FORKT Violet-Dark Aesthetic)
 local Colors = {
@@ -61,9 +78,8 @@ local Colors = {
     PlaceTag      = Color3.fromRGB(199, 125, 255)
 }
 
--- Icons Library
 local Icons = {
-    ToggleIcon = "rbxassetid://137790966470480",
+    ToggleIcon = "rbxassetid://137790966470480", -- Image permintaan user
     Package    = "rbxassetid://128864012857079",
     Folder     = "rbxassetid://88761476236687",
     Dashboard  = "rbxassetid://90838150633173",
@@ -72,8 +88,6 @@ local Icons = {
     File       = "rbxassetid://17109896197",
     Gamepad    = "rbxassetid://115836418226834",
     Check      = "rbxassetid://18349889388",
-    Close      = "rbxassetid://126290678159164",
-    Bell       = "rbxassetid://14013788454",
     Alert      = "rbxassetid://7634887649"
 }
 
@@ -83,16 +97,383 @@ if existingGui then
     existingGui:Destroy()
 end
 
--- ============================================================
--- 2. CORE FORKT ENGINE (FILE SCANNER & HYBRID IMPORTER)
--- ============================================================
+-- =====================================================
+-- 2. MCHLERN STRING & RICHTEXT STRIPPER
+-- =====================================================
+local function stripRichText(s)
+    if type(s) ~= "string" then return s end
+    local clean = s:gsub("<%s*/?%s*font[^>]*>", "")
+    clean = clean:gsub("<[^>]+>", "")
+    clean = clean:gsub("&lt;", "<"):gsub("&gt;", ">"):gsub("&amp;", "&"):gsub("&quot;", '"'):gsub("&apos;", "'")
+    return clean
+end
 
-local Engine = {}
+local function storeScriptSource(key, src)
+    if not key or not src then return end
+    local clean = stripRichText(src)
+    _G.MCHLERN_RAW_SOURCES[key] = clean
+    if typeof(key) == "Instance" then
+        _G.MCHLERN_RAW_SOURCES[key.Name] = clean
+        _G.MCHLERN_RAW_SOURCES[key.ClassName .. key.Name] = clean
+    end
+end
 
-Engine.SearchPaths = {
+-- =====================================================
+-- 3. STUDIO LITE INTEGRATION & AUTO-ANCHOR
+-- =====================================================
+local function triggerServerLoad(idStr)
+    if not serverFuncs or not idStr or idStr == "" then return end
+    local id = tostring(idStr):match("%d+")
+    if id and tonumber(id) and tonumber(id) > 0 then
+        task.spawn(function()
+            pcall(function()
+                serverFuncs:InvokeServer("LoadMeshToRuntimeMeshes", tonumber(id))
+            end)
+        end)
+    end
+end
+
+local function applyStudioLiteProps(obj)
+    if not obj then return end
+    pcall(function()
+        if obj:IsA("BasePart") then
+            local origAnchor  = obj.Anchored
+            local origCollide = obj.CanCollide
+            obj.Anchored = true
+            if obj:GetAttribute("SL_Anchored") == nil then obj:SetAttribute("SL_Anchored", origAnchor) end
+            if obj:GetAttribute("SL_CanCollide") == nil then obj:SetAttribute("SL_CanCollide", origCollide) end
+        end
+    end)
+    for _, child in ipairs(obj:GetChildren()) do applyStudioLiteProps(child) end
+end
+
+local function loadAssetsToSLServer(obj)
+    task.spawn(function()
+        pcall(function()
+            for _, node in ipairs(obj:GetDescendants()) do
+                if node:IsA("MeshPart") then
+                    triggerServerLoad(node.MeshId)
+                    triggerServerLoad(node.TextureID)
+                elseif node:IsA("Decal") or node:IsA("Texture") then
+                    triggerServerLoad(node.Texture)
+                elseif node:IsA("SpecialMesh") then
+                    triggerServerLoad(node.MeshId)
+                    triggerServerLoad(node.TextureId)
+                elseif node:IsA("UnionOperation") or node:IsA("PartOperation") then
+                    triggerServerLoad(node.AssetId)
+                end
+            end
+        end)
+    end)
+end
+
+-- Positioning tepat di depan Kamera Studio Lite
+local function positionAndAnchorAsset(obj)
+    if not obj then return end
+
+    pcall(function()
+        if obj:IsA("BasePart") then
+            obj.Anchored = true
+            obj.Velocity = Vector3.zero
+            obj.RotVelocity = Vector3.zero
+        end
+        for _, desc in ipairs(obj:GetDescendants()) do
+            if desc:IsA("BasePart") then
+                desc.Anchored = true
+                desc.Velocity = Vector3.zero
+                desc.RotVelocity = Vector3.zero
+            end
+        end
+    end)
+
+    pcall(applyStudioLiteProps, obj)
+
+    local targetPos = nil
+    local cam = Workspace.CurrentCamera
+
+    if cam and cam.CFrame then
+        local camCF = cam.CFrame
+        local rayOrigin = camCF.Position
+        local rayDir = camCF.LookVector * 28
+
+        local rayParams = RaycastParams.new()
+        rayParams.FilterType = Enum.RaycastFilterType.Exclude
+        local filterList = {obj}
+        if LP.Character then table.insert(filterList, LP.Character) end
+        rayParams.FilterDescendantsInstances = filterList
+
+        local rayResult = nil
+        pcall(function() rayResult = Workspace:Raycast(rayOrigin, rayDir, rayParams) end)
+
+        if rayResult and rayResult.Position then
+            targetPos = rayResult.Position + Vector3.new(0, 1.5, 0)
+        else
+            targetPos = camCF.Position + (camCF.LookVector * 14)
+        end
+    elseif LP.Character and LP.Character:FindFirstChild("HumanoidRootPart") then
+        local hrp = LP.Character.HumanoidRootPart
+        targetPos = hrp.Position + (hrp.CFrame.LookVector * 8) + Vector3.new(0, 1, 0)
+    else
+        targetPos = Vector3.new(0, 5, 0)
+    end
+
+    if targetPos then
+        pcall(function()
+            if obj:IsA("Model") then
+                local cf, sz = obj:GetBoundingBox()
+                local bottomOffset = sz.Y / 2
+                obj:PivotTo(CFrame.new(targetPos + Vector3.new(0, bottomOffset, 0)))
+            elseif obj:IsA("BasePart") then
+                obj.CFrame = CFrame.new(targetPos + Vector3.new(0, obj.Size.Y / 2, 0))
+            else
+                local parts = {}
+                for _, d in ipairs(obj:GetDescendants()) do
+                    if d:IsA("BasePart") then table.insert(parts, d) end
+                end
+                if #parts > 0 then
+                    local avgPos = Vector3.zero
+                    for _, p in ipairs(parts) do avgPos = avgPos + p.Position end
+                    avgPos = avgPos / #parts
+                    local delta = targetPos - avgPos
+                    for _, p in ipairs(parts) do p.CFrame = p.CFrame + delta end
+                end
+            end
+        end)
+    end
+end
+
+-- =====================================================
+-- 4. PURE LUA LZ4 & BINARY PARSER (LOSSLESS SCRIPT RECOVERY)
+-- =====================================================
+local function getPackSize(fmt)
+    if not fmt then return 1 end
+    if fmt == "<I4" or fmt == ">I4" or fmt == "<i4" or fmt == ">i4" or fmt == "I4" or fmt == "i4" or fmt == ">f" or fmt == "<f" then return 4 end
+    if fmt == "<I2" or fmt == ">I2" or fmt == "<i2" or fmt == ">i2" or fmt == "I2" or fmt == "i2" then return 2 end
+    if fmt == "<I8" or fmt == ">I8" or fmt == "<i8" or fmt == ">i8" or fmt == "I8" or fmt == "i8" or fmt == "<d" or fmt == ">d" then return 8 end
+    if fmt == "I1" or fmt == "i1" or fmt == "B" or fmt == "b" then return 1 end
+    local ok, sz = pcall(function() return #string.pack(fmt, 0) end)
+    return (ok and sz) or 4
+end
+
+local function Buffer(str, allowOverflows)
+    local Stream = { Offset = 0, Source = str, Length = string.len(str), AllowOverflows = (allowOverflows == nil and true) or allowOverflows }
+    function Stream:read(len, shift)
+        len = len or 1; shift = (shift == nil and true) or shift
+        local dat = string.sub(self.Source, self.Offset + 1, self.Offset + len)
+        if shift then self:seek(len) end
+        return dat
+    end
+    function Stream:seek(len) self.Offset = math.clamp(self.Offset + len, 0, self.Length) end
+    function Stream:readNumber(fmt, shift)
+        fmt = fmt or "I1"; local sz = getPackSize(fmt); local chunk = self:read(sz, shift)
+        if #chunk < sz then return 0 end
+        local ok, val = pcall(string.unpack, fmt, chunk)
+        return ok and val or 0
+    end
+    function Stream:append(s) self.Source = self.Source .. s; self.Length = #self.Source end
+    function Stream:toEnd() self.Offset = self.Length end
+    return Stream
+end
+
+local function transformInt(x) return (x % 2 == 0) and (x / 2) or (-(x + 1) / 2) end
+local function rbxF32(x) x = bit32.rrotate(x, 1); return string.unpack(">f", string.pack(">I4", x)) end
+
+local basicTypes = {}
+function basicTypes.String(buf) return buf:read(buf:readNumber("<I4")) end
+function basicTypes.Int32(buf) return transformInt(buf:readNumber(">I4")) end
+function basicTypes.Int64(buf) return transformInt(buf:readNumber(">I8")) end
+function basicTypes.Float32(buf) return rbxF32(buf:readNumber(">I4")) end
+function basicTypes.Float64(buf) return buf:readNumber("<d") end
+
+function basicTypes.InterleaveArrayWithSize(buf, count, sizeof)
+    if count < 0 then return Buffer("", false) end
+    local stream = buf:read(count * sizeof)
+    local out = table.create(count)
+    for i = 1, count do
+        local chunk = table.create(sizeof)
+        for s = 0, sizeof - 1 do
+            local bitPos = i + (count * s)
+            chunk[s+1] = string.sub(stream, bitPos, bitPos)
+        end
+        out[i] = table.concat(chunk)
+    end
+    return Buffer(table.concat(out), false)
+end
+
+function basicTypes.Int32Array(buf, count)
+    if count < 1 then return {} end
+    local o = table.create(count)
+    local strings = basicTypes.InterleaveArrayWithSize(buf, count, 4)
+    for i = 1, count do o[i] = basicTypes.Int32(strings) end
+    return o
+end
+
+function basicTypes.RbxF32Array(buf, count)
+    if count < 1 then return {} end
+    local o = table.create(count)
+    local strings = basicTypes.InterleaveArrayWithSize(buf, count, 4)
+    for i = 1, count do o[i] = basicTypes.Float32(strings) end
+    return o
+end
+
+function basicTypes.RefArray(buf, count)
+    if count < 1 then return {} end
+    local o = table.create(count)
+    local refs = basicTypes.Int32Array(buf, count)
+    local last = 0
+    for i = 1, count do local ref = last + refs[i]; o[i] = ref; last = ref end
+    return o
+end
+
+local function lz4(lz4data)
+    local inputStream = Buffer(lz4data)
+    local compressedLen = string.unpack("<I4", inputStream:read(4))
+    local decompressedLen = string.unpack("<I4", inputStream:read(4))
+    local reserved = string.unpack("<I4", inputStream:read(4))
+    if reserved ~= 0 then error("not lz4") end
+    if compressedLen == 0 then return inputStream:read(decompressedLen) end
+    local outputStream = Buffer("")
+    repeat
+        local token = string.byte(inputStream:read())
+        local litLen = bit32.rshift(token, 4)
+        local matLen = bit32.band(token, 15) + 4
+        if litLen >= 15 then
+            repeat local nextByte = string.byte(inputStream:read()); litLen = litLen + nextByte until nextByte ~= 0xFF
+        end
+        local literal = inputStream:read(litLen); outputStream:append(literal); outputStream:toEnd()
+        if outputStream.Length < decompressedLen then
+            local offset = string.unpack("<I2", inputStream:read(2))
+            if matLen >= 19 then
+                repeat local nextByte = string.byte(inputStream:read()); matLen = matLen + nextByte until nextByte ~= 0xFF
+            end
+            outputStream:seek(-offset)
+            local pos = outputStream.Offset; local match = outputStream:read(matLen)
+            local unreadBytes = outputStream.LastUnreadBytes or 0
+            local extra
+            if unreadBytes then
+                repeat
+                    outputStream.Offset = pos; extra = outputStream:read(unreadBytes)
+                    unreadBytes = outputStream.LastUnreadBytes or 0; match = match .. extra
+                until unreadBytes <= 0
+            end
+            outputStream:append(match); outputStream:toEnd()
+        end
+    until outputStream.Length >= decompressedLen
+    return outputStream.Source
+end
+
+local function parseRBXMForSources(data)
+    local sources = {}
+    local rbxmBuffer = Buffer(data, false)
+    if rbxmBuffer:read(8) ~= "<roblox!" or rbxmBuffer:read(6) ~= string.char(137,255,13,10,26,10) then return sources, "Invalid header" end
+    if rbxmBuffer:read(2) ~= (string.char(0)..string.char(0)) then return sources, "Invalid version" end
+    local classCount = rbxmBuffer:readNumber("<i4")
+    local instCount = rbxmBuffer:readNumber("<i4")
+    local classRefs, virtualInstances, strings, chunkInfo = {}, {}, {}, {}
+    local _EC = "END"..string.char(0)
+    local valid = {[_EC]=true, ["INST"]=true, ["META"]=true, ["PRNT"]=true, ["PROP"]=true, ["SIGN"]=true, ["SSTR"]=true}
+    for k in pairs(valid) do chunkInfo[k] = {} end
+    if rbxmBuffer:read(8) ~= string.char(0,0,0,0,0,0,0,0) then return sources, "Invalid header" end
+
+    local index, last_chunk = 0, nil
+    repeat
+        index = index + 1
+        local chunk = {InternalID = index, Header = rbxmBuffer:read(4)}
+        if not valid[chunk.Header] then return sources, "Invalid chunk" end
+        local lz4Header = rbxmBuffer:read(16, false)
+        local compressed = string.unpack("<I4", string.sub(lz4Header, 1, 4))
+        local decompressed = string.unpack("<I4", string.sub(lz4Header, 5, 8))
+        local reserved = string.sub(lz4Header, 9, 12)
+        local dataChunk
+        if compressed == 0 then
+            dataChunk = rbxmBuffer:read(decompressed + 12)
+        else
+            dataChunk = lz4(rbxmBuffer:read(compressed + 12))
+        end
+        chunk.Data = Buffer(dataChunk, false)
+        table.insert(chunkInfo[chunk.Header], chunk)
+        last_chunk = chunk
+    until last_chunk and last_chunk.Header == _EC
+
+    for _, chunk in ipairs(chunkInfo["INST"] or {}) do
+        local buf = chunk.Data
+        local classID = buf:readNumber("<I4"); local className = basicTypes.String(buf)
+        if buf:read() == "\1" then return sources, "Contains services" end
+        local count = buf:readNumber("<I4"); local refs = basicTypes.RefArray(buf, count)
+        classRefs[classID] = { Name = className, Sizeof = count, Refs = refs }
+        for _, ref in ipairs(refs) do virtualInstances[ref] = { ClassId = classID, ClassName = className, Ref = ref, Properties = {}, Children = {} } end
+    end
+
+    for _, chunk in ipairs(chunkInfo["PROP"] or {}) do
+        local buf = chunk.Data
+        local classID = buf:readNumber("<I4"); local classref = classRefs[classID]
+        if classref then
+            local refs = classref.Refs; local sizeof = classref.Sizeof; local name = basicTypes.String(buf)
+            if string.byte(buf:read(1, false)) == 0x1E then buf:seek(1) end
+            local typeID = string.byte(buf:read()); local props = {}
+            if typeID == 0x01 or typeID == 0x1D then
+                for i = 1, sizeof do props[i] = basicTypes.String(buf) end
+            end
+            if name == "Source" or name == "ContentText" then
+                for i, v in ipairs(refs) do
+                    if virtualInstances[v] and props[i] then virtualInstances[v].Properties[name] = props[i] end
+                end
+            end
+        end
+    end
+
+    local function buildSourceMap(node, path)
+        local src = node.Properties["Source"] or node.Properties["ContentText"]
+        if src and type(src) == "string" and #src > 0 then sources[path] = src end
+        for _, child in ipairs(node.Children or {}) do buildSourceMap(child, path .. "." .. child.ClassName .. ":" .. (child.Properties["Name"] or "unnamed")) end
+    end
+
+    for _, chunk in ipairs(chunkInfo["PRNT"] or {}) do
+        local buf = chunk.Data
+        if buf:read() == string.char(0) then
+            local count = buf:readNumber("<I4")
+            local child_refs = basicTypes.RefArray(buf, count); local parent_refs = basicTypes.RefArray(buf, count)
+            for i = 1, count do
+                local child = virtualInstances[child_refs[i]]; local parent = virtualInstances[parent_refs[i]]
+                if child and parent then table.insert(parent.Children, child) end
+            end
+        end
+    end
+
+    for _, inst in pairs(virtualInstances) do
+        buildSourceMap(inst, inst.ClassName .. ":" .. (inst.Properties["Name"] or "root"))
+    end
+
+    return sources, nil
+end
+
+local function parseAllSources(data)
+    local sources = {}
+    if not data or #data < 20 then return sources end
+    if data:sub(1, 8) == "<roblox!" then
+        local ok, res = pcall(parseRBXMForSources, data)
+        if ok and res and type(res) == "table" then
+            for k, v in pairs(res) do
+                sources[k] = v
+                local cleanName = k:match(":([%w_]+)$") or k:match("%.([%w_]+)$") or k
+                sources[cleanName] = v
+            end
+        end
+    end
+    for name, code in data:gmatch('<string name="Name">([^<]+)</string>.-<ProtectedString name="Source"><%!%[CDATA%[(.-)%]%]></ProtectedString>') do
+        sources[name] = code
+    end
+    return sources
+end
+
+-- =====================================================
+-- 5. MCHLERN 100% PROVEN SCANNING LOGIC (FIX FOR DELTA)
+-- =====================================================
+local SCAN_PATHS = {
+    "workspace",
     "Delta/workspace",
     "delta/workspace",
-    "workspace",
+    "Android/Delta/workspace",
     "/sdcard/Delta/workspace",
     "/sdcard/Android/Delta/workspace",
     "Download",
@@ -101,180 +482,205 @@ Engine.SearchPaths = {
     "/sdcard/Downloads",
     "/storage/emulated/0/Download",
     "/storage/emulated/0/Downloads",
+    "../workspace",
     "."
 }
 
-local function getBaseFileName(path)
-    return path:match("([^/\\]+)$") or path
+local function safeReadFile(p)
+    if not readfile then return nil end
+    local ok, d = pcall(readfile, p)
+    return ok and d or nil
 end
 
-local function getFileType(fileName)
-    local lower = fileName:lower()
-    if lower:match("%.rbxmx?$") then
-        return "MODEL"
-    elseif lower:match("%.rbxlx?$") then
-        return "PLACE"
-    end
-    return nil
+local function safeListFiles(p)
+    if not listfilesFn then return nil end
+    local ok, f = pcall(listfilesFn, p)
+    return ok and f or nil
 end
 
-function Engine.ScanFiles()
-    local results = {}
-    local visited = {}
+local function getFileName(p)
+    return p:match("([^/\\]+)$") or p
+end
 
-    if not listfiles then
-        warn("[FORKT Engine] listfiles() tidak tersedia pada executor ini.")
-        return results
-    end
+-- Pindai file .rbxm dan .rbxl dengan Anti-Lag Throttling
+local function getAllAssetFiles()
+    local result = {}
+    local seen = {}
+    if not listfilesFn then return result end
+    local lastYield = os.clock()
 
-    local function scanDirectory(dir, depth)
-        if depth > 4 or visited[dir] then return end
-        visited[dir] = true
+    local function scanDeep(folder, depth)
+        if depth > 4 or seen[folder] then return end
+        seen[folder] = true
+        local files = safeListFiles(folder)
+        if not files then return end
 
-        local success, files = pcall(listfiles, dir)
-        if not success or not files then return end
+        for _, path in ipairs(files) do
+            if os.clock() - lastYield > 0.015 then
+                task.wait()
+                lastYield = os.clock()
+            end
+            local lp = path:lower()
+            local isModel = (lp:sub(-5) == ".rbxm" or lp:sub(-6) == ".rbxmx")
+            local isPlace = (lp:sub(-5) == ".rbxl" or lp:sub(-6) == ".rbxlx")
 
-        for _, filePath in ipairs(files) do
-            local name = getBaseFileName(filePath)
-            local ftype = getFileType(name)
-
-            if ftype then
-                table.insert(results, {
-                    name = name,
-                    path = filePath,
-                    fileType = ftype
+            if (isModel or isPlace) and not seen[path] then
+                seen[path] = true
+                table.insert(result, {
+                    name     = getFileName(path),
+                    path     = path,
+                    fileType = isModel and "MODEL" or "PLACE"
                 })
-            else
-                local isDir = (isfolder and isfolder(filePath)) or not name:match("%.[%w]+$")
-                if isDir then
-                    scanDirectory(filePath, depth + 1)
-                end
+            elseif not lp:match("%.[%a%d]+$") then
+                scanDeep(path, depth + 1)
             end
         end
     end
 
-    for _, root in ipairs(Engine.SearchPaths) do
-        local ok = (isfolder and isfolder(root)) or pcall(listfiles, root)
-        if ok then
-            scanDirectory(root, 0)
+    for _, p in ipairs(SCAN_PATHS) do
+        if safeListFiles(p) then
+            scanDeep(p, 0)
         end
     end
 
-    return results
+    return result
 end
 
--- Register Mesh & Texture IDs to Studio Lite Runtime
-local function registerMeshToStudioLite(meshIdStr)
-    if not ServerFunctions or not meshIdStr or meshIdStr == "" then return end
-    local numId = tonumber(tostring(meshIdStr):match("%d+"))
-    if numId then
+-- =====================================================
+-- 6. MCHLERN SMART INSERT RBXM & RBXL (FULL FORKT DISTRIBUTOR)
+-- =====================================================
+local function recreateScriptAsNative(oldScript, sourceCode)
+    if not oldScript or not oldScript:IsA("LuaSourceContainer") then return nil end
+    local parent = oldScript.Parent
+    local name = oldScript.Name
+    local className = oldScript.ClassName
+    local src = sourceCode or oldScript.Source or "-- Script"
+
+    local newScript = Instance.new(className)
+    newScript.Name = name
+
+    for _, ch in ipairs(oldScript:GetChildren()) do
+        if not ch:IsA("LuaSourceContainer") and ch.Name ~= "SL_1ReadOnly" then
+            pcall(function() ch:Clone().Parent = newScript end)
+        end
+    end
+
+    pcall(function() newScript.Source = src end)
+    storeScriptSource(newScript, src)
+    newScript.Parent = parent
+    pcall(function() oldScript:Destroy() end)
+    return newScript
+end
+
+local function smartInsertAsset(fileData)
+    local filePath = fileData.path
+    local fileName = fileData.name
+    local isPlace  = fileData.fileType == "PLACE"
+
+    local data = safeReadFile(filePath)
+    local parsedSources = {}
+    if data and #data > 0 then
+        parsedSources = parseAllSources(data)
+        for k, v in pairs(parsedSources) do storeScriptSource(k, stripRichText(v)) end
+    end
+
+    local loadedObjs = nil
+    if customAsset then
         pcall(function()
-            ServerFunctions:InvokeServer("LoadMeshToRuntimeMeshes", numId)
+            local url = customAsset(filePath)
+            if url then
+                local objs = game:GetObjects(url)
+                if objs and #objs > 0 then loadedObjs = objs end
+            end
         end)
     end
-end
 
--- Adapt Object Properties and Tagging for Studio Lite
-local function adaptInstanceForStudioLite(instance)
-    for _, desc in ipairs(instance:GetDescendants()) do
-        if desc:IsA("BasePart") then
-            local origAnchored = desc.Anchored
-            local origCollide = desc.CanCollide
+    if not loadedObjs then
+        pcall(function()
+            local objs = game:GetObjects("rbxasset://" .. filePath:gsub("\\", "/"))
+            if objs and #objs > 0 then loadedObjs = objs end
+        end)
+    end
 
-            if desc:GetAttribute("SL_Anchored") == nil then
-                desc:SetAttribute("SL_Anchored", origAnchored)
-                desc:SetAttribute("SL_CanCollide", origCollide)
+    if not loadedObjs and data and writefile and customAsset then
+        pcall(function()
+            local tmp = "mchlern_tmp_" .. fileName
+            writefile(tmp, data)
+            local url2 = customAsset(tmp)
+            if url2 then
+                local objs2 = game:GetObjects(url2)
+                if objs2 and #objs2 > 0 then loadedObjs = objs2 end
             end
-
-            desc.Anchored = true
-
-            if desc:IsA("MeshPart") then
-                registerMeshToStudioLite(desc.MeshId)
-                registerMeshToStudioLite(desc.TextureID)
-            end
-        end
-    end
-end
-
--- Main Import Function for .rbxm and .rbxl
-function Engine.ImportFile(fileData)
-    local filePath = fileData.path
-    local isPlace = fileData.fileType == "PLACE"
-
-    if isfile and not isfile(filePath) then
-        return false, "File tidak ditemukan di storage HP."
+            pcall(function() if delfile then delfile(tmp) end end)
+        end)
     end
 
-    -- Step 1: Request Roblox Game Engine to Deserialize Asset
-    local loadOk, objects = pcall(function()
-        local assetUri
-        if getcustomasset then
-            assetUri = getcustomasset(filePath)
-        else
-            assetUri = "rbxasset://" .. filePath:gsub("\\", "/")
-        end
-        return game:GetObjects(assetUri)
-    end)
-
-    if not loadOk or not objects or #objects == 0 then
-        if isPlace then
-            return false, "RBXL terdeteksi tetapi Delta gagal mengembalikan DataModel."
-        else
-            return false, "Gagal membuat Instance dari file .rbxm."
-        end
+    if not loadedObjs or #loadedObjs == 0 then
+        return false, isPlace and "GetObjects gagal membaca .rbxl" or "GetObjects gagal membaca .rbxm"
     end
 
-    -- Step 2: Prepare Target Container
-    local cleanName = fileData.name:gsub("%.[^%.]+$", "")
+    -- Siapkan Folder Target di Workspace
+    local cleanName = fileName:gsub("%.[^%.]+$", "")
     local importFolder = Instance.new("Folder")
     importFolder.Name = "Imported_" .. cleanName
-    importFolder:SetAttribute("FORKT_IMPORTED", true)
+    importFolder:SetAttribute("MCHLERN_IMPORT", true)
     importFolder:SetAttribute("SourcePath", filePath)
+    importFolder.Parent = Workspace
 
-    local loadedCount = 0
+    local count = 0
+    local serviceMap = {
+        Workspace         = importFolder,
+        workspace         = importFolder,
+        ReplicatedStorage = ReplicatedStorage,
+        Lighting          = game:GetService("Lighting"),
+        StarterGui        = game:GetService("StarterGui")
+    }
 
-    -- Step 3: Handle Objects (Model vs DataModel RBXL)
-    for _, obj in ipairs(objects) do
+    local function setupSingleObj(o)
+        applyStudioLiteProps(o)
+        positionAndAnchorAsset(o)
+        loadAssetsToSLServer(o)
+
+        local sList = {}
+        if o:IsA("LuaSourceContainer") then table.insert(sList, o) end
+        for _, d in ipairs(o:GetDescendants()) do
+            if d:IsA("LuaSourceContainer") then table.insert(sList, d) end
+        end
+
+        for _, scr in ipairs(sList) do
+            local src = parsedSources[scr.ClassName .. ":" .. scr.Name] or parsedSources[scr.Name] or scr.Source
+            recreateScriptAsNative(scr, stripRichText(src or "-- Script"))
+        end
+    end
+
+    for _, obj in ipairs(loadedObjs) do
         if typeof(obj) == "Instance" then
             if obj:IsA("DataModel") then
-                -- Unpack DataModel Services for .rbxl
-                local targetServices = {
-                    ["Workspace"] = Workspace,
-                    ["Lighting"] = game:GetService("Lighting"),
-                    ["ReplicatedStorage"] = ReplicatedStorage
-                }
-
-                for _, service in ipairs(obj:GetChildren()) do
-                    if service.Name == "Workspace" then
-                        for _, item in ipairs(service:GetChildren()) do
-                            adaptInstanceForStudioLite(item)
-                            item.Parent = importFolder
-                            loadedCount = loadedCount + 1
-                            task.wait(0)
-                        end
-                    elseif targetServices[service.Name] then
-                        for _, item in ipairs(service:GetChildren()) do
-                            item.Parent = targetServices[service.Name]
-                            loadedCount = loadedCount + 1
-                        end
+                -- RBXL Mode: Unpack Services
+                for _, svc in ipairs(obj:GetChildren()) do
+                    local target = serviceMap[svc.Name] or importFolder
+                    for _, child in ipairs(svc:GetChildren()) do
+                        child.Parent = target
+                        setupSingleObj(child)
+                        count = count + 1
                     end
+                    task.wait(0)
                 end
             else
-                -- Normal .rbxm Model / Part
-                adaptInstanceForStudioLite(obj)
+                -- Normal RBXM Mode
                 obj.Parent = importFolder
-                loadedCount = loadedCount + 1
+                setupSingleObj(obj)
+                count = count + 1
             end
         end
     end
 
-    importFolder.Parent = Workspace
-    return true, string.format("Berhasil import %d object ke Workspace!", loadedCount)
+    return true, string.format("%d object berhasil di-import!", count)
 end
 
--- ============================================================
--- 3. USER INTERFACE (FORKT STYLE & FIXED NON-DRAGGABLE TOGGLE)
--- ============================================================
+-- =====================================================
+-- 7. GUI CREATION (FORKT AESTHETIC & NON-DRAGGABLE LEFT TOGGLE)
+-- =====================================================
 
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "ForktImporter_CleanUI"
@@ -284,7 +690,7 @@ ScreenGui.DisplayOrder = 9999
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = GuiParent
 
--- Toast Notification Component
+-- Toast Notification Helper
 local function showToast(title, desc, isErr)
     local toast = Instance.new("Frame")
     toast.Size = UDim2.fromOffset(260, 56)
@@ -299,7 +705,6 @@ local function showToast(title, desc, isErr)
     stroke.Color = isErr and Colors.Error or Colors.Primary
     stroke.Thickness = 1.2
     stroke.Transparency = 0.3
-
     Instance.new("UICorner", toast).CornerRadius = UDim.new(0, 10)
 
     local iconBg = Instance.new("Frame", toast)
@@ -338,32 +743,28 @@ local function showToast(title, desc, isErr)
     lblDesc.TextColor3 = Colors.TextMuted
     lblDesc.TextXAlignment = Enum.TextXAlignment.Left
 
-    -- Slide in
     TweenService:Create(toast, TweenInfo.new(0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
         Position = UDim2.new(1, -20, 1, -20)
     }):Play()
 
-    -- Auto dismiss
     task.delay(3, function()
         if toast and toast.Parent then
             local tw = TweenService:Create(toast, TweenInfo.new(0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
                 Position = UDim2.new(1, 280, 1, -20)
             })
             tw:Play()
-            tw.Completed:Connect(function()
-                toast:Destroy()
-            end)
+            tw.Completed:Connect(function() toast:Destroy() end)
         end
     end)
 end
 
--- ============================================================
--- TOGGLE BUTTON (DI KIRI, FIXED POSITION, TIDAK BISA DIDRAG)
--- ============================================================
+-- =====================================================
+-- TOGGLE BUTTON (DI KIRI LAYAR, KUNCI PERMANEN - GAK BISA DIDRAG)
+-- =====================================================
 local ToggleButton = Instance.new("ImageButton", ScreenGui)
-ToggleButton.Name = "FixedToggleLeft"
+ToggleButton.Name = "FixedLeftToggle"
 ToggleButton.Size = UDim2.fromOffset(46, 46)
-ToggleButton.Position = UDim2.new(0, 14, 0.5, -23) -- Tetap di kiri tengah layar
+ToggleButton.Position = UDim2.new(0, 14, 0.5, -23) -- Posisi paten di sisi kiri
 ToggleButton.AnchorPoint = Vector2.new(0, 0.5)
 ToggleButton.BackgroundColor3 = Colors.Surface
 ToggleButton.BorderSizePixel = 0
@@ -383,24 +784,12 @@ ToggleIcon.Size = UDim2.fromOffset(28, 28)
 ToggleIcon.Position = UDim2.fromScale(0.5, 0.5)
 ToggleIcon.AnchorPoint = Vector2.new(0.5, 0.5)
 ToggleIcon.BackgroundTransparency = 1
-ToggleIcon.Image = Icons.ToggleIcon -- Gambar 137790966470480 permintaan user
+ToggleIcon.Image = Icons.ToggleIcon -- Asset 137790966470480
 ToggleIcon.ZIndex = 51
 
--- Efek Hover / Press Halus (Tanpa Drag)
-ToggleButton.MouseEnter:Connect(function()
-    TweenService:Create(ToggleStroke, TweenInfo.new(0.2), {Transparency = 0, Color = Colors.PrimaryLight}):Play()
-    TweenService:Create(ToggleButton, TweenInfo.new(0.2), {BackgroundColor3 = Colors.SurfaceHover}):Play()
-end)
-
-ToggleButton.MouseLeave:Connect(function()
-    TweenService:Create(ToggleStroke, TweenInfo.new(0.2), {Transparency = 0.3, Color = Colors.Primary}):Play()
-    TweenService:Create(ToggleButton, TweenInfo.new(0.2), {BackgroundColor3 = Colors.Surface}):Play()
-end)
-
--- ============================================================
+-- =====================================================
 -- MAIN WINDOW FRAME & RESPONSIVE SCALING
--- ============================================================
-
+-- =====================================================
 local MainWindow = Instance.new("Frame", ScreenGui)
 MainWindow.Name = "MainWindow"
 MainWindow.Size = UDim2.fromOffset(560, 380)
@@ -418,13 +807,13 @@ MainStroke.Color = Colors.Primary
 MainStroke.Thickness = 1.4
 MainStroke.Transparency = 0.4
 
--- Responsive Scale untuk Mobile Phone
+-- Responsive Scale
 local MainScale = Instance.new("UIScale", MainWindow)
 local function updateUiScale()
     local cam = Workspace.CurrentCamera
     if cam and cam.ViewportSize.X > 0 then
-        local scaleFactor = math.min(cam.ViewportSize.X / 600, cam.ViewportSize.Y / 420, 1)
-        MainScale.Scale = math.clamp(scaleFactor, 0.55, 1)
+        local sf = math.min(cam.ViewportSize.X / 600, cam.ViewportSize.Y / 420, 1)
+        MainScale.Scale = math.clamp(sf, 0.55, 1)
     end
 end
 updateUiScale()
@@ -432,17 +821,13 @@ if Workspace.CurrentCamera then
     Workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateUiScale)
 end
 
--- Hubungkan Toggle Button untuk Buka/Tutup Main Window
 ToggleButton.MouseButton1Click:Connect(function()
     MainWindow.Visible = not MainWindow.Visible
-    local targetScale = MainWindow.Visible and 1 or 0.8
-    local targetRot = MainWindow.Visible and 0 or 360
     TweenService:Create(ToggleIcon, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
-        Rotation = targetRot
+        Rotation = MainWindow.Visible and 0 or 360
     }):Play()
 end)
 
--- Top Close Button di MainWindow
 local CloseBtn = Instance.new("TextButton", MainWindow)
 CloseBtn.Size = UDim2.fromOffset(26, 26)
 CloseBtn.Position = UDim2.new(1, -36, 0, 12)
@@ -457,10 +842,9 @@ CloseBtn.MouseButton1Click:Connect(function()
     MainWindow.Visible = false
 end)
 
--- ============================================================
--- SIDEBAR (LOGO, TABS & QUICK RESCAN)
--- ============================================================
-
+-- =====================================================
+-- SIDEBAR
+-- =====================================================
 local Sidebar = Instance.new("Frame", MainWindow)
 Sidebar.Size = UDim2.new(0, 180, 1, 0)
 Sidebar.BackgroundColor3 = Colors.Sidebar
@@ -472,7 +856,6 @@ SidebarStroke.Color = Colors.Primary
 SidebarStroke.Transparency = 0.7
 SidebarStroke.Thickness = 1
 
--- Brand Header
 local BrandIcon = Instance.new("ImageLabel", Sidebar)
 BrandIcon.Size = UDim2.fromOffset(28, 28)
 BrandIcon.Position = UDim2.fromOffset(16, 16)
@@ -494,20 +877,18 @@ local BrandSub = Instance.new("TextLabel", Sidebar)
 BrandSub.Size = UDim2.new(1, -55, 0, 14)
 BrandSub.Position = UDim2.fromOffset(50, 31)
 BrandSub.BackgroundTransparency = 1
-BrandSub.Text = "Studio Lite Importer"
+BrandSub.Text = "Studio Lite v7.1"
 BrandSub.Font = Enum.Font.GothamMedium
 BrandSub.TextSize = 9
 BrandSub.TextColor3 = Colors.TextMuted
 BrandSub.TextXAlignment = Enum.TextXAlignment.Left
 
--- Divider
 local Divider = Instance.new("Frame", Sidebar)
 Divider.Size = UDim2.new(1, -28, 0, 1)
 Divider.Position = UDim2.fromOffset(14, 56)
 Divider.BackgroundColor3 = Colors.Border
 Divider.BorderSizePixel = 0
 
--- Tab Container
 local TabContainer = Instance.new("Frame", Sidebar)
 TabContainer.Size = UDim2.new(1, 0, 0, 150)
 TabContainer.Position = UDim2.fromOffset(0, 68)
@@ -517,7 +898,6 @@ local TabListLayout = Instance.new("UIListLayout", TabContainer)
 TabListLayout.Padding = UDim.new(0, 6)
 TabListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 
--- Rescan Assets Button
 local RescanBtn = Instance.new("TextButton", Sidebar)
 RescanBtn.Size = UDim2.new(1, -28, 0, 36)
 RescanBtn.Position = UDim2.new(0, 14, 1, -48)
@@ -546,10 +926,9 @@ RescanLbl.TextSize = 11
 RescanLbl.TextColor3 = Colors.Text
 RescanLbl.TextXAlignment = Enum.TextXAlignment.Left
 
--- ============================================================
+-- =====================================================
 -- CONTENT CONTAINER & VIEWS
--- ============================================================
-
+-- =====================================================
 local ContentContainer = Instance.new("Frame", MainWindow)
 ContentContainer.Size = UDim2.new(1, -180, 1, 0)
 ContentContainer.Position = UDim2.new(0, 180, 0, 0)
@@ -577,7 +956,7 @@ HeaderTitle.TextSize = 16
 HeaderTitle.TextColor3 = Colors.Text
 HeaderTitle.TextXAlignment = Enum.TextXAlignment.Left
 
--- Stat Counters (Total Assets & Ready)
+-- Stats
 local StatsFrame = Instance.new("Frame", AssetsView)
 StatsFrame.Size = UDim2.new(1, 0, 0, 48)
 StatsFrame.Position = UDim2.fromOffset(0, 28)
@@ -589,7 +968,6 @@ local function createStatCard(posX, label, defVal)
     card.Position = UDim2.new(posX, 0, 0, 0)
     card.BackgroundColor3 = Colors.Surface
     Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
-    
     local cStroke = Instance.new("UIStroke", card)
     cStroke.Color = Colors.Primary
     cStroke.Transparency = 0.6
@@ -618,7 +996,7 @@ local function createStatCard(posX, label, defVal)
 end
 
 local StatTotalLbl = createStatCard(0, "TOTAL ASSETS", "0")
-local StatReadyLbl = createStatCard(0.52, "CORE ENGINE", "ONLINE")
+local StatReadyLbl = createStatCard(0.52, "CORE ENGINE", "MCHLERN v7.1")
 
 -- Filter Bar (ALL, MODEL, PLACE)
 local CurrentFilter = "ALL"
@@ -646,23 +1024,27 @@ local function createFilterButton(text, index, filterType)
     return btn
 end
 
-local btnAll = createFilterButton("ALL", 1, "ALL")
+local btnAll   = createFilterButton("ALL", 1, "ALL")
 local btnModel = createFilterButton("MODEL (.rbxm)", 2, "MODEL")
 local btnPlace = createFilterButton("PLACE (.rbxl)", 3, "PLACE")
 
--- Asset Scroll List
+-- Asset Scroll List (CanvasSize Dihitung Manual Supaya Tidak Hilang di HP!)
 local AssetScroll = Instance.new("ScrollingFrame", AssetsView)
 AssetScroll.Size = UDim2.new(1, 0, 1, -122)
 AssetScroll.Position = UDim2.fromOffset(0, 120)
 AssetScroll.BackgroundTransparency = 1
 AssetScroll.ScrollBarThickness = 3
 AssetScroll.ScrollBarImageColor3 = Colors.Primary
-AssetScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 AssetScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
 
 local ScrollLayout = Instance.new("UIListLayout", AssetScroll)
 ScrollLayout.Padding = UDim.new(0, 8)
 ScrollLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+-- UPDATE CANVASSIZE SECARA MANUAL
+ScrollLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    AssetScroll.CanvasSize = UDim2.new(0, 0, 0, ScrollLayout.AbsoluteContentSize.Y + 25)
+end)
 
 -- View 2: System Info
 local InfoView = Instance.new("Frame", ContentContainer)
@@ -702,7 +1084,7 @@ Instance.new("UICorner", AvatarImg).CornerRadius = UDim.new(1, 0)
 
 task.spawn(function()
     pcall(function()
-        local thumb = Players:GetUserThumbnailAsync(LocalPlayer.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+        local thumb = Players:GetUserThumbnailAsync(LP.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
         if thumb then AvatarImg.Image = thumb end
     end)
 end)
@@ -711,7 +1093,7 @@ local UserDisplayName = Instance.new("TextLabel", ProfileCard)
 UserDisplayName.Size = UDim2.new(1, -80, 0, 20)
 UserDisplayName.Position = UDim2.fromOffset(72, 16)
 UserDisplayName.BackgroundTransparency = 1
-UserDisplayName.Text = LocalPlayer.DisplayName
+UserDisplayName.Text = LP.DisplayName
 UserDisplayName.Font = Enum.Font.GothamBold
 UserDisplayName.TextSize = 14
 UserDisplayName.TextColor3 = Colors.Text
@@ -721,13 +1103,13 @@ local UserTag = Instance.new("TextLabel", ProfileCard)
 UserTag.Size = UDim2.new(1, -80, 0, 16)
 UserTag.Position = UDim2.fromOffset(72, 36)
 UserTag.BackgroundTransparency = 1
-UserTag.Text = "@" .. LocalPlayer.Name .. " | ID: " .. tostring(LocalPlayer.UserId)
+UserTag.Text = "@" .. LP.Name .. " | ID: " .. tostring(LP.UserId)
 UserTag.Font = Enum.Font.Gotham
 UserTag.TextSize = 10
 UserTag.TextColor3 = Colors.TextMuted
 UserTag.TextXAlignment = Enum.TextXAlignment.Left
 
--- View 3: Settings & Instructions
+-- View 3: Settings
 local SettingsView = Instance.new("Frame", ContentContainer)
 SettingsView.Size = UDim2.fromScale(1, 1)
 SettingsView.BackgroundTransparency = 1
@@ -768,10 +1150,9 @@ HelpText.TextXAlignment = Enum.TextXAlignment.Left
 HelpText.TextYAlignment = Enum.TextYAlignment.Top
 HelpText.TextWrapped = true
 
--- ============================================================
+-- =====================================================
 -- TAB NAVIGATION CONTROLLER
--- ============================================================
-
+-- =====================================================
 local Tabs = {}
 local function createTabButton(name, iconId, targetView)
     local tabBtn = Instance.new("TextButton", TabContainer)
@@ -844,7 +1225,7 @@ createTabButton("Assets", Icons.Folder, AssetsView)
 createTabButton("System Info", Icons.Dashboard, InfoView)
 createTabButton("Settings", Icons.Settings, SettingsView)
 
--- Set Default Active Tab
+-- Default Active Tab
 if Tabs["Assets"] then
     Tabs["Assets"].View.Visible = true
     Tabs["Assets"].Bar.Size = UDim2.new(0, 3, 0, 18)
@@ -854,15 +1235,14 @@ if Tabs["Assets"] then
     Tabs["Assets"].Button.BackgroundColor3 = Colors.Primary
 end
 
--- ============================================================
--- ASSET ITEM POPULATION & RESCAN CONTROLLER
--- ============================================================
-
-local CurrentScannedFiles = {}
+-- =====================================================
+-- ASSET ITEM POPULATION (100% RESPONSIF)
+-- =====================================================
+local renderedCards = {}
 
 local function renderAssetItem(fileData)
     local itemFrame = Instance.new("Frame", AssetScroll)
-    itemFrame.Size = UDim2.new(1, 0, 0, 52)
+    itemFrame.Size = UDim2.new(1, -6, 0, 52)
     itemFrame.BackgroundColor3 = Colors.Surface
     Instance.new("UICorner", itemFrame).CornerRadius = UDim.new(0, 8)
 
@@ -875,7 +1255,7 @@ local function renderAssetItem(fileData)
     local isPlace = fileData.fileType == "PLACE"
     local tagColor = isPlace and Colors.PlaceTag or Colors.ModelTag
 
-    -- Icon
+    -- Tag Icon Box
     local iconBox = Instance.new("Frame", itemFrame)
     iconBox.Size = UDim2.fromOffset(34, 34)
     iconBox.Position = UDim2.fromOffset(10, 9)
@@ -891,7 +1271,7 @@ local function renderAssetItem(fileData)
     icon.Image = isPlace and Icons.Gamepad or Icons.File
     icon.ImageColor3 = tagColor
 
-    -- Name & Path
+    -- Label Nama & Path
     local nameLbl = Instance.new("TextLabel", itemFrame)
     nameLbl.Size = UDim2.new(1, -150, 0, 16)
     nameLbl.Position = UDim2.fromOffset(52, 10)
@@ -917,7 +1297,7 @@ local function renderAssetItem(fileData)
     -- Import Button
     local importBtn = Instance.new("TextButton", itemFrame)
     importBtn.Size = UDim2.fromOffset(70, 28)
-    importBtn.Position = UDim2.new(1, -80, 0.5, -14)
+    importBtn.Position = UDim2.new(1, -78, 0.5, -14)
     importBtn.BackgroundColor3 = Colors.Primary
     importBtn.Text = "IMPORT"
     importBtn.Font = Enum.Font.GothamBold
@@ -927,12 +1307,11 @@ local function renderAssetItem(fileData)
 
     importBtn.MouseButton1Click:Connect(function()
         if importBtn.Text == "LOADING" then return end
-
         importBtn.Text = "LOADING"
         importBtn.BackgroundColor3 = Colors.PrimaryDark
 
         task.spawn(function()
-            local success, msg = Engine.ImportFile(fileData)
+            local success, msg = smartInsertAsset(fileData)
             if success then
                 importBtn.Text = "DONE"
                 importBtn.BackgroundColor3 = Colors.Success
@@ -950,6 +1329,9 @@ local function renderAssetItem(fileData)
             end
         end)
     end)
+
+    table.insert(renderedCards, { card = itemFrame, ftype = fileData.fileType })
+    return itemFrame
 end
 
 local function applyFilter(filter)
@@ -961,12 +1343,11 @@ local function applyFilter(filter)
         }):Play()
     end
 
-    for _, child in ipairs(AssetScroll:GetChildren()) do
-        if child:IsA("Frame") and child:GetAttribute("FileType") then
-            local ftype = child:GetAttribute("FileType")
-            child.Visible = (filter == "ALL") or (ftype == filter)
-        end
+    for _, item in ipairs(renderedCards) do
+        local visible = (filter == "ALL") or (item.ftype == filter)
+        item.card.Visible = visible
     end
+    AssetScroll.CanvasSize = UDim2.new(0, 0, 0, ScrollLayout.AbsoluteContentSize.Y + 25)
 end
 
 btnAll.MouseButton1Click:Connect(function() applyFilter("ALL") end)
@@ -981,20 +1362,19 @@ local function performScan()
 
     -- Bersihkan list lama
     for _, child in ipairs(AssetScroll:GetChildren()) do
-        if child:IsA("Frame") then
-            child:Destroy()
-        end
+        if child:IsA("Frame") then child:Destroy() end
     end
+    renderedCards = {}
 
     task.spawn(function()
-        local files = Engine.ScanFiles()
-        CurrentScannedFiles = files
+        local files = getAllAssetFiles()
 
         for _, fileData in ipairs(files) do
             renderAssetItem(fileData)
             task.wait(0.01)
         end
 
+        AssetScroll.CanvasSize = UDim2.new(0, 0, 0, ScrollLayout.AbsoluteContentSize.Y + 25)
         applyFilter(CurrentFilter)
         StatTotalLbl.Text = tostring(#files)
         RescanLbl.Text = "Rescan Assets"
@@ -1003,13 +1383,13 @@ local function performScan()
         if #files > 0 then
             showToast("Scan Selesai", string.format("Ditemukan %d file asset di memori HP.", #files), false)
         else
-            showToast("Folder Kosong", "Tidak ada file .rbxm/.rbxl di folder Delta/workspace.", true)
+            showToast("Folder Kosong", "Taruh file di Delta/workspace atau Download.", true)
         end
     end)
 end
 
 RescanBtn.MouseButton1Click:Connect(performScan)
 
--- Initial Auto Scan on Startup
+-- Jalankan scan pertama kali saat script dijalankan
 task.defer(performScan)
-showToast("FORKT Importer", "Engine siap digunakan di Studio Lite!", false)
+showToast("FORKT Importer", "Engine MCHLERN v7.1 siap digunakan di Studio Lite!", false)
