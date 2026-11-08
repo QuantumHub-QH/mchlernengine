@@ -7,9 +7,9 @@
                                                                   
    [*] Target      : Roblox Studio Lite (ScottSpiritWalker)
    [*] Executor    : Delta (Android / PC)
-   [*] Engine      : MCHLERN x FORKT v7.1 Hybrid Core
-   [*] Features    : Fixed Left Toggle, 100% Responsive Scanner,
-                     Lossless LZ4 Script Recovery, Auto-Anchor
+   [*] Insert Core : FORKT Engine v3.8 PRO (Native 1:1 Port)
+   [*] Scan Core   : MCHLERN Responsive File Scanner
+   [*] UI & Toggle : FORKT Theme + Fixed Non-Draggable Left Toggle
 ============================================================
 ]]--
 
@@ -53,8 +53,8 @@ local clipFn      = setclipboard or toclipboard or (Clipboard and Clipboard.set)
 local customAsset = getcustomasset or getsynasset or nil
 local listfilesFn = listfiles or nil
 
--- Memory Source Code Registry
-_G.MCHLERN_RAW_SOURCES = _G.MCHLERN_RAW_SOURCES or {}
+-- Memory Source Code Registry (FORKT & MCHLERN)
+_G.FORKT_RAW_SOURCES = _G.FORKT_RAW_SOURCES or {}
 
 -- Studio Lite Remote & Folder Hooks
 local slFolder    = ReplicatedStorage:FindFirstChild("StudioLiteFolder")
@@ -79,7 +79,7 @@ local Colors = {
 }
 
 local Icons = {
-    ToggleIcon = "rbxassetid://137790966470480", -- Image permintaan user
+    ToggleIcon = "rbxassetid://137790966470480", -- Toggle icon user
     Package    = "rbxassetid://128864012857079",
     Folder     = "rbxassetid://88761476236687",
     Dashboard  = "rbxassetid://90838150633173",
@@ -98,376 +98,7 @@ if existingGui then
 end
 
 -- =====================================================
--- 2. MCHLERN STRING & RICHTEXT STRIPPER
--- =====================================================
-local function stripRichText(s)
-    if type(s) ~= "string" then return s end
-    local clean = s:gsub("<%s*/?%s*font[^>]*>", "")
-    clean = clean:gsub("<[^>]+>", "")
-    clean = clean:gsub("&lt;", "<"):gsub("&gt;", ">"):gsub("&amp;", "&"):gsub("&quot;", '"'):gsub("&apos;", "'")
-    return clean
-end
-
-local function storeScriptSource(key, src)
-    if not key or not src then return end
-    local clean = stripRichText(src)
-    _G.MCHLERN_RAW_SOURCES[key] = clean
-    if typeof(key) == "Instance" then
-        _G.MCHLERN_RAW_SOURCES[key.Name] = clean
-        _G.MCHLERN_RAW_SOURCES[key.ClassName .. key.Name] = clean
-    end
-end
-
--- =====================================================
--- 3. STUDIO LITE INTEGRATION & AUTO-ANCHOR
--- =====================================================
-local function triggerServerLoad(idStr)
-    if not serverFuncs or not idStr or idStr == "" then return end
-    local id = tostring(idStr):match("%d+")
-    if id and tonumber(id) and tonumber(id) > 0 then
-        task.spawn(function()
-            pcall(function()
-                serverFuncs:InvokeServer("LoadMeshToRuntimeMeshes", tonumber(id))
-            end)
-        end)
-    end
-end
-
-local function applyStudioLiteProps(obj)
-    if not obj then return end
-    pcall(function()
-        if obj:IsA("BasePart") then
-            local origAnchor  = obj.Anchored
-            local origCollide = obj.CanCollide
-            obj.Anchored = true
-            if obj:GetAttribute("SL_Anchored") == nil then obj:SetAttribute("SL_Anchored", origAnchor) end
-            if obj:GetAttribute("SL_CanCollide") == nil then obj:SetAttribute("SL_CanCollide", origCollide) end
-        end
-    end)
-    for _, child in ipairs(obj:GetChildren()) do applyStudioLiteProps(child) end
-end
-
-local function loadAssetsToSLServer(obj)
-    task.spawn(function()
-        pcall(function()
-            for _, node in ipairs(obj:GetDescendants()) do
-                if node:IsA("MeshPart") then
-                    triggerServerLoad(node.MeshId)
-                    triggerServerLoad(node.TextureID)
-                elseif node:IsA("Decal") or node:IsA("Texture") then
-                    triggerServerLoad(node.Texture)
-                elseif node:IsA("SpecialMesh") then
-                    triggerServerLoad(node.MeshId)
-                    triggerServerLoad(node.TextureId)
-                elseif node:IsA("UnionOperation") or node:IsA("PartOperation") then
-                    triggerServerLoad(node.AssetId)
-                end
-            end
-        end)
-    end)
-end
-
--- Positioning tepat di depan Kamera Studio Lite
-local function positionAndAnchorAsset(obj)
-    if not obj then return end
-
-    pcall(function()
-        if obj:IsA("BasePart") then
-            obj.Anchored = true
-            obj.Velocity = Vector3.zero
-            obj.RotVelocity = Vector3.zero
-        end
-        for _, desc in ipairs(obj:GetDescendants()) do
-            if desc:IsA("BasePart") then
-                desc.Anchored = true
-                desc.Velocity = Vector3.zero
-                desc.RotVelocity = Vector3.zero
-            end
-        end
-    end)
-
-    pcall(applyStudioLiteProps, obj)
-
-    local targetPos = nil
-    local cam = Workspace.CurrentCamera
-
-    if cam and cam.CFrame then
-        local camCF = cam.CFrame
-        local rayOrigin = camCF.Position
-        local rayDir = camCF.LookVector * 28
-
-        local rayParams = RaycastParams.new()
-        rayParams.FilterType = Enum.RaycastFilterType.Exclude
-        local filterList = {obj}
-        if LP.Character then table.insert(filterList, LP.Character) end
-        rayParams.FilterDescendantsInstances = filterList
-
-        local rayResult = nil
-        pcall(function() rayResult = Workspace:Raycast(rayOrigin, rayDir, rayParams) end)
-
-        if rayResult and rayResult.Position then
-            targetPos = rayResult.Position + Vector3.new(0, 1.5, 0)
-        else
-            targetPos = camCF.Position + (camCF.LookVector * 14)
-        end
-    elseif LP.Character and LP.Character:FindFirstChild("HumanoidRootPart") then
-        local hrp = LP.Character.HumanoidRootPart
-        targetPos = hrp.Position + (hrp.CFrame.LookVector * 8) + Vector3.new(0, 1, 0)
-    else
-        targetPos = Vector3.new(0, 5, 0)
-    end
-
-    if targetPos then
-        pcall(function()
-            if obj:IsA("Model") then
-                local cf, sz = obj:GetBoundingBox()
-                local bottomOffset = sz.Y / 2
-                obj:PivotTo(CFrame.new(targetPos + Vector3.new(0, bottomOffset, 0)))
-            elseif obj:IsA("BasePart") then
-                obj.CFrame = CFrame.new(targetPos + Vector3.new(0, obj.Size.Y / 2, 0))
-            else
-                local parts = {}
-                for _, d in ipairs(obj:GetDescendants()) do
-                    if d:IsA("BasePart") then table.insert(parts, d) end
-                end
-                if #parts > 0 then
-                    local avgPos = Vector3.zero
-                    for _, p in ipairs(parts) do avgPos = avgPos + p.Position end
-                    avgPos = avgPos / #parts
-                    local delta = targetPos - avgPos
-                    for _, p in ipairs(parts) do p.CFrame = p.CFrame + delta end
-                end
-            end
-        end)
-    end
-end
-
--- =====================================================
--- 4. PURE LUA LZ4 & BINARY PARSER (LOSSLESS SCRIPT RECOVERY)
--- =====================================================
-local function getPackSize(fmt)
-    if not fmt then return 1 end
-    if fmt == "<I4" or fmt == ">I4" or fmt == "<i4" or fmt == ">i4" or fmt == "I4" or fmt == "i4" or fmt == ">f" or fmt == "<f" then return 4 end
-    if fmt == "<I2" or fmt == ">I2" or fmt == "<i2" or fmt == ">i2" or fmt == "I2" or fmt == "i2" then return 2 end
-    if fmt == "<I8" or fmt == ">I8" or fmt == "<i8" or fmt == ">i8" or fmt == "I8" or fmt == "i8" or fmt == "<d" or fmt == ">d" then return 8 end
-    if fmt == "I1" or fmt == "i1" or fmt == "B" or fmt == "b" then return 1 end
-    local ok, sz = pcall(function() return #string.pack(fmt, 0) end)
-    return (ok and sz) or 4
-end
-
-local function Buffer(str, allowOverflows)
-    local Stream = { Offset = 0, Source = str, Length = string.len(str), AllowOverflows = (allowOverflows == nil and true) or allowOverflows }
-    function Stream:read(len, shift)
-        len = len or 1; shift = (shift == nil and true) or shift
-        local dat = string.sub(self.Source, self.Offset + 1, self.Offset + len)
-        if shift then self:seek(len) end
-        return dat
-    end
-    function Stream:seek(len) self.Offset = math.clamp(self.Offset + len, 0, self.Length) end
-    function Stream:readNumber(fmt, shift)
-        fmt = fmt or "I1"; local sz = getPackSize(fmt); local chunk = self:read(sz, shift)
-        if #chunk < sz then return 0 end
-        local ok, val = pcall(string.unpack, fmt, chunk)
-        return ok and val or 0
-    end
-    function Stream:append(s) self.Source = self.Source .. s; self.Length = #self.Source end
-    function Stream:toEnd() self.Offset = self.Length end
-    return Stream
-end
-
-local function transformInt(x) return (x % 2 == 0) and (x / 2) or (-(x + 1) / 2) end
-local function rbxF32(x) x = bit32.rrotate(x, 1); return string.unpack(">f", string.pack(">I4", x)) end
-
-local basicTypes = {}
-function basicTypes.String(buf) return buf:read(buf:readNumber("<I4")) end
-function basicTypes.Int32(buf) return transformInt(buf:readNumber(">I4")) end
-function basicTypes.Int64(buf) return transformInt(buf:readNumber(">I8")) end
-function basicTypes.Float32(buf) return rbxF32(buf:readNumber(">I4")) end
-function basicTypes.Float64(buf) return buf:readNumber("<d") end
-
-function basicTypes.InterleaveArrayWithSize(buf, count, sizeof)
-    if count < 0 then return Buffer("", false) end
-    local stream = buf:read(count * sizeof)
-    local out = table.create(count)
-    for i = 1, count do
-        local chunk = table.create(sizeof)
-        for s = 0, sizeof - 1 do
-            local bitPos = i + (count * s)
-            chunk[s+1] = string.sub(stream, bitPos, bitPos)
-        end
-        out[i] = table.concat(chunk)
-    end
-    return Buffer(table.concat(out), false)
-end
-
-function basicTypes.Int32Array(buf, count)
-    if count < 1 then return {} end
-    local o = table.create(count)
-    local strings = basicTypes.InterleaveArrayWithSize(buf, count, 4)
-    for i = 1, count do o[i] = basicTypes.Int32(strings) end
-    return o
-end
-
-function basicTypes.RbxF32Array(buf, count)
-    if count < 1 then return {} end
-    local o = table.create(count)
-    local strings = basicTypes.InterleaveArrayWithSize(buf, count, 4)
-    for i = 1, count do o[i] = basicTypes.Float32(strings) end
-    return o
-end
-
-function basicTypes.RefArray(buf, count)
-    if count < 1 then return {} end
-    local o = table.create(count)
-    local refs = basicTypes.Int32Array(buf, count)
-    local last = 0
-    for i = 1, count do local ref = last + refs[i]; o[i] = ref; last = ref end
-    return o
-end
-
-local function lz4(lz4data)
-    local inputStream = Buffer(lz4data)
-    local compressedLen = string.unpack("<I4", inputStream:read(4))
-    local decompressedLen = string.unpack("<I4", inputStream:read(4))
-    local reserved = string.unpack("<I4", inputStream:read(4))
-    if reserved ~= 0 then error("not lz4") end
-    if compressedLen == 0 then return inputStream:read(decompressedLen) end
-    local outputStream = Buffer("")
-    repeat
-        local token = string.byte(inputStream:read())
-        local litLen = bit32.rshift(token, 4)
-        local matLen = bit32.band(token, 15) + 4
-        if litLen >= 15 then
-            repeat local nextByte = string.byte(inputStream:read()); litLen = litLen + nextByte until nextByte ~= 0xFF
-        end
-        local literal = inputStream:read(litLen); outputStream:append(literal); outputStream:toEnd()
-        if outputStream.Length < decompressedLen then
-            local offset = string.unpack("<I2", inputStream:read(2))
-            if matLen >= 19 then
-                repeat local nextByte = string.byte(inputStream:read()); matLen = matLen + nextByte until nextByte ~= 0xFF
-            end
-            outputStream:seek(-offset)
-            local pos = outputStream.Offset; local match = outputStream:read(matLen)
-            local unreadBytes = outputStream.LastUnreadBytes or 0
-            local extra
-            if unreadBytes then
-                repeat
-                    outputStream.Offset = pos; extra = outputStream:read(unreadBytes)
-                    unreadBytes = outputStream.LastUnreadBytes or 0; match = match .. extra
-                until unreadBytes <= 0
-            end
-            outputStream:append(match); outputStream:toEnd()
-        end
-    until outputStream.Length >= decompressedLen
-    return outputStream.Source
-end
-
-local function parseRBXMForSources(data)
-    local sources = {}
-    local rbxmBuffer = Buffer(data, false)
-    if rbxmBuffer:read(8) ~= "<roblox!" or rbxmBuffer:read(6) ~= string.char(137,255,13,10,26,10) then return sources, "Invalid header" end
-    if rbxmBuffer:read(2) ~= (string.char(0)..string.char(0)) then return sources, "Invalid version" end
-    local classCount = rbxmBuffer:readNumber("<i4")
-    local instCount = rbxmBuffer:readNumber("<i4")
-    local classRefs, virtualInstances, strings, chunkInfo = {}, {}, {}, {}
-    local _EC = "END"..string.char(0)
-    local valid = {[_EC]=true, ["INST"]=true, ["META"]=true, ["PRNT"]=true, ["PROP"]=true, ["SIGN"]=true, ["SSTR"]=true}
-    for k in pairs(valid) do chunkInfo[k] = {} end
-    if rbxmBuffer:read(8) ~= string.char(0,0,0,0,0,0,0,0) then return sources, "Invalid header" end
-
-    local index, last_chunk = 0, nil
-    repeat
-        index = index + 1
-        local chunk = {InternalID = index, Header = rbxmBuffer:read(4)}
-        if not valid[chunk.Header] then return sources, "Invalid chunk" end
-        local lz4Header = rbxmBuffer:read(16, false)
-        local compressed = string.unpack("<I4", string.sub(lz4Header, 1, 4))
-        local decompressed = string.unpack("<I4", string.sub(lz4Header, 5, 8))
-        local reserved = string.sub(lz4Header, 9, 12)
-        local dataChunk
-        if compressed == 0 then
-            dataChunk = rbxmBuffer:read(decompressed + 12)
-        else
-            dataChunk = lz4(rbxmBuffer:read(compressed + 12))
-        end
-        chunk.Data = Buffer(dataChunk, false)
-        table.insert(chunkInfo[chunk.Header], chunk)
-        last_chunk = chunk
-    until last_chunk and last_chunk.Header == _EC
-
-    for _, chunk in ipairs(chunkInfo["INST"] or {}) do
-        local buf = chunk.Data
-        local classID = buf:readNumber("<I4"); local className = basicTypes.String(buf)
-        if buf:read() == "\1" then return sources, "Contains services" end
-        local count = buf:readNumber("<I4"); local refs = basicTypes.RefArray(buf, count)
-        classRefs[classID] = { Name = className, Sizeof = count, Refs = refs }
-        for _, ref in ipairs(refs) do virtualInstances[ref] = { ClassId = classID, ClassName = className, Ref = ref, Properties = {}, Children = {} } end
-    end
-
-    for _, chunk in ipairs(chunkInfo["PROP"] or {}) do
-        local buf = chunk.Data
-        local classID = buf:readNumber("<I4"); local classref = classRefs[classID]
-        if classref then
-            local refs = classref.Refs; local sizeof = classref.Sizeof; local name = basicTypes.String(buf)
-            if string.byte(buf:read(1, false)) == 0x1E then buf:seek(1) end
-            local typeID = string.byte(buf:read()); local props = {}
-            if typeID == 0x01 or typeID == 0x1D then
-                for i = 1, sizeof do props[i] = basicTypes.String(buf) end
-            end
-            if name == "Source" or name == "ContentText" then
-                for i, v in ipairs(refs) do
-                    if virtualInstances[v] and props[i] then virtualInstances[v].Properties[name] = props[i] end
-                end
-            end
-        end
-    end
-
-    local function buildSourceMap(node, path)
-        local src = node.Properties["Source"] or node.Properties["ContentText"]
-        if src and type(src) == "string" and #src > 0 then sources[path] = src end
-        for _, child in ipairs(node.Children or {}) do buildSourceMap(child, path .. "." .. child.ClassName .. ":" .. (child.Properties["Name"] or "unnamed")) end
-    end
-
-    for _, chunk in ipairs(chunkInfo["PRNT"] or {}) do
-        local buf = chunk.Data
-        if buf:read() == string.char(0) then
-            local count = buf:readNumber("<I4")
-            local child_refs = basicTypes.RefArray(buf, count); local parent_refs = basicTypes.RefArray(buf, count)
-            for i = 1, count do
-                local child = virtualInstances[child_refs[i]]; local parent = virtualInstances[parent_refs[i]]
-                if child and parent then table.insert(parent.Children, child) end
-            end
-        end
-    end
-
-    for _, inst in pairs(virtualInstances) do
-        buildSourceMap(inst, inst.ClassName .. ":" .. (inst.Properties["Name"] or "root"))
-    end
-
-    return sources, nil
-end
-
-local function parseAllSources(data)
-    local sources = {}
-    if not data or #data < 20 then return sources end
-    if data:sub(1, 8) == "<roblox!" then
-        local ok, res = pcall(parseRBXMForSources, data)
-        if ok and res and type(res) == "table" then
-            for k, v in pairs(res) do
-                sources[k] = v
-                local cleanName = k:match(":([%w_]+)$") or k:match("%.([%w_]+)$") or k
-                sources[cleanName] = v
-            end
-        end
-    end
-    for name, code in data:gmatch('<string name="Name">([^<]+)</string>.-<ProtectedString name="Source"><%!%[CDATA%[(.-)%]%]></ProtectedString>') do
-        sources[name] = code
-    end
-    return sources
-end
-
--- =====================================================
--- 5. MCHLERN 100% PROVEN SCANNING LOGIC (FIX FOR DELTA)
+-- 2. MCHLERN RESPONSIVE FILE SCANNER (MENEMUKAN ASET DI DELTA)
 -- =====================================================
 local SCAN_PATHS = {
     "workspace",
@@ -502,7 +133,6 @@ local function getFileName(p)
     return p:match("([^/\\]+)$") or p
 end
 
--- Pindai file .rbxm dan .rbxl dengan Anti-Lag Throttling
 local function getAllAssetFiles()
     local result = {}
     local seen = {}
@@ -547,139 +177,267 @@ local function getAllAssetFiles()
 end
 
 -- =====================================================
--- 6. MCHLERN SMART INSERT RBXM & RBXL (FULL FORKT DISTRIBUTOR)
+-- 3. FORKT ENGINE INSERTION CORE (PORTED 1:1 DARI FORKT v3.8)
 -- =====================================================
-local function recreateScriptAsNative(oldScript, sourceCode)
-    if not oldScript or not oldScript:IsA("LuaSourceContainer") then return nil end
-    local parent = oldScript.Parent
-    local name = oldScript.Name
-    local className = oldScript.ClassName
-    local src = sourceCode or oldScript.Source or "-- Script"
 
-    local newScript = Instance.new(className)
-    newScript.Name = name
-
-    for _, ch in ipairs(oldScript:GetChildren()) do
-        if not ch:IsA("LuaSourceContainer") and ch.Name ~= "SL_1ReadOnly" then
-            pcall(function() ch:Clone().Parent = newScript end)
-        end
-    end
-
-    pcall(function() newScript.Source = src end)
-    storeScriptSource(newScript, src)
-    newScript.Parent = parent
-    pcall(function() oldScript:Destroy() end)
-    return newScript
+-- [A] Helper sanitize file name (transformValue7 FORKT)
+local function sanitizeName(raw)
+    raw = tostring(raw or "Imported")
+    raw = raw:gsub('[\\/:*?"<>|]', "_")
+    raw = raw:gsub("^%s+", ""):gsub("%s+$", "")
+    return #raw > 0 and raw or "Imported"
 end
 
-local function smartInsertAsset(fileData)
-    local filePath = fileData.path
-    local fileName = fileData.name
-    local isPlace  = fileData.fileType == "PLACE"
-
-    local data = safeReadFile(filePath)
-    local parsedSources = {}
-    if data and #data > 0 then
-        parsedSources = parseAllSources(data)
-        for k, v in pairs(parsedSources) do storeScriptSource(k, stripRichText(v)) end
+-- [B] Folder Creator with FORKT_RBXL_IMPORT attribute (createFolder FORKT)
+local function createForktFolder(fileData)
+    local base = sanitizeName(getFileName(fileData.path):gsub("%.[^%.]+$", ""))
+    local current = base
+    local dup = 1
+    while Workspace:FindFirstChild(current) do
+        dup = dup + 1
+        current = base .. "_" .. tostring(dup)
     end
+
+    local folder = Instance.new("Folder")
+    folder.Name = current
+    folder.Parent = Workspace
+    folder:SetAttribute("FORKT_RBXL_IMPORT", true)
+    folder:SetAttribute("SourceFile", tostring(fileData.path))
+    return folder
+end
+
+-- [C] Safe Parenting (runProtected12 FORKT)
+local function runProtected12(inst, target)
+    local function tryOp()
+        inst.Parent = target
+    end
+    if typeof(inst) ~= "Instance" or typeof(target) ~= "Instance" then
+        return false
+    else
+        return pcall(tryOp) and inst.Parent == target
+    end
+end
+
+-- [D] Mesh ID Runtime Extractor & Loader (extractDigits FORKT)
+local function extractDigitsAndLoad(idValue)
+    if not serverFuncs or not idValue or idValue == "" then return end
+    local strId = tostring(idValue):match("%d+")
+    if strId and tonumber(strId) then
+        pcall(function()
+            serverFuncs:InvokeServer("LoadMeshToRuntimeMeshes", tonumber(strId))
+        end)
+    end
+end
+
+-- [E] Item Setup: SL_Anchored, MeshPart & SL_CodeTextBox (runProtected11 FORKT)
+local function runProtected11(rootInst, rawSources)
+    if typeof(rootInst) ~= "Instance" then return end
+
+    local descs = {}
+    local ok, res = pcall(function() return rootInst:GetDescendants() end)
+    if ok and res then
+        descs = res
+    end
+    table.insert(descs, 1, rootInst)
+
+    for j, c in ipairs(descs) do
+        if typeof(c) == "Instance" then
+            -- 1. BasePart Anchoring & Attributes (FORKT Style)
+            if c:IsA("BasePart") then
+                local origAnchor = c.Anchored
+                local origCollide = c.CanCollide
+                c.Anchored = true
+                if c:GetAttribute("SL_Anchored") == nil then
+                    c:SetAttribute("SL_Anchored", origAnchor)
+                    c:SetAttribute("SL_CanCollide", origCollide)
+                end
+                if c:IsA("MeshPart") then
+                    extractDigitsAndLoad(c.MeshId)
+                    extractDigitsAndLoad(c.TextureID)
+                end
+            end
+
+            -- 2. Script Code Injection to Studio Lite Editor (FORKT runProtected10)
+            if c:IsA("LuaSourceContainer") then
+                local key = c.ClassName .. ":" .. c.Name
+                local src = rawSources and (rawSources[key] or rawSources[c.Name])
+                if not src and rawSources then
+                    for k, v in pairs(rawSources) do
+                        if k:find(c.Name, 1, true) then src = v; break end
+                    end
+                end
+                if not src then
+                    pcall(function() src = c.Source end)
+                end
+
+                if src and #src > 0 then
+                    _G.FORKT_RAW_SOURCES[c.ClassName .. c.Name] = src
+                    local tb = c:FindFirstChild("SL_CodeTextBox")
+                    if tb then
+                        tb.Text = src
+                    end
+                    if c.ClassName == "ModuleScript" then
+                        local ro = c:FindFirstChild("SL_1ReadOnly")
+                        if ro then
+                            pcall(function() ro.Text = src; ro.ContentText = src end)
+                        end
+                    end
+                end
+            end
+
+            -- Throttling Heartbeat tiap 100 objek persis FORKT
+            if j % 100 == 0 then
+                RunService.Heartbeat:Wait()
+            end
+        end
+    end
+end
+
+-- [F] Service Children Distributor (runProtected13 FORKT)
+local function runProtected13(sourceService, targetService, rawSources)
+    if typeof(sourceService) ~= "Instance" or typeof(targetService) ~= "Instance" then
+        return 0
+    end
+    local ok, children = pcall(function() return sourceService:GetChildren() end)
+    if not ok or type(children) ~= "table" then return 0 end
+
+    local count = 0
+    for i, child in ipairs(children) do
+        if typeof(child) == "Instance" then
+            runProtected12(child, targetService)
+            runProtected11(child, rawSources)
+            count = count + 1
+        end
+        if i % 100 == 0 then
+            RunService.Heartbeat:Wait()
+        end
+    end
+    return count
+end
+
+-- [G] FORKT Service Mapping Table (ba table dari FORKT)
+local ForktServiceMap = {
+    Workspace           = Workspace,
+    workspace           = Workspace,
+    ReplicatedStorage   = ReplicatedStorage,
+    ReplicatedFirst     = game:GetService("ReplicatedFirst"),
+    StarterGui          = game:GetService("StarterGui"),
+    StarterPack         = game:GetService("StarterPack"),
+    StarterPlayer       = game:GetService("StarterPlayer"),
+    Lighting            = game:GetService("Lighting"),
+    SoundService        = game:GetService("SoundService"),
+    ServerScriptService = _G.sss or ReplicatedStorage,
+    ServerStorage       = _G.ss or ReplicatedStorage,
+    Teams               = game:GetService("Teams"),
+    Chat                = game:GetService("Chat")
+}
+
+-- [H] DataModel & Objects Unpacker (runProtected14 FORKT)
+local function runProtected14(objects, placeFolder, rawSources)
+    local totalLoaded = 0
+    for _, d in ipairs(objects) do
+        if typeof(d) == "Instance" then
+            if d:IsA("DataModel") then
+                -- RBXL Mode: Unpack DataModel per service
+                for _, service in ipairs(d:GetChildren()) do
+                    local isWs = (service.Name == "Workspace" or service.Name == "workspace")
+                    local target = isWs and placeFolder or ForktServiceMap[service.Name]
+                    if target then
+                        totalLoaded = totalLoaded + runProtected13(service, target, rawSources)
+                    else
+                        runProtected12(service, placeFolder)
+                        runProtected11(service, rawSources)
+                        totalLoaded = totalLoaded + 1
+                    end
+                    task.wait()
+                end
+            else
+                -- Model / Part Mode
+                runProtected12(d, placeFolder)
+                runProtected11(d, rawSources)
+                totalLoaded = totalLoaded + 1
+                task.wait(0)
+            end
+        end
+    end
+    return totalLoaded
+end
+
+-- [I] Core FORKT Import Function (runProtected16 FORKT)
+local function runForktImport(fileData)
+    local raw = safeReadFile(fileData.path)
+    if not raw or #raw == 0 then
+        return false, "readfile gagal"
+    end
+
+    local isPlace = fileData.fileType == "PLACE"
+    local formatType = (fileData.path:lower():match("%.rbxlx?$") and "XML") or "BINARY"
+
+    -- Source extraction if binary format available
+    local rawSources = {}
+    for name, code in raw:gmatch('<string name="Name">([^<]+)</string>.-<ProtectedString name="Source"><%!%[CDATA%[(.-)%]%]></ProtectedString>') do
+        rawSources[name] = code
+    end
+
+    -- URL Candidate array (getcustomasset + rbxasset)
+    local candidateURLs = {}
+    if customAsset then
+        local okAsset, ca = pcall(customAsset, fileData.path)
+        if okAsset and ca then
+            table.insert(candidateURLs, ca)
+        end
+    end
+    table.insert(candidateURLs, "rbxasset://" .. tostring(fileData.path):gsub("\\", "/"))
 
     local loadedObjs = nil
-    if customAsset then
-        pcall(function()
-            local url = customAsset(filePath)
-            if url then
-                local objs = game:GetObjects(url)
-                if objs and #objs > 0 then loadedObjs = objs end
+    -- 2 attempts dengan jeda 0.25s persis logic FORKT (while h <= 2 do)
+    for attempt = 1, 2 do
+        for _, url in ipairs(candidateURLs) do
+            local ok, res = pcall(function() return game:GetObjects(url) end)
+            if ok and res and #res > 0 then
+                loadedObjs = res
+                break
             end
-        end)
+        end
+        if loadedObjs then break end
+        task.wait(0.25)
     end
 
-    if not loadedObjs then
+    -- Fallback writefile temporary jika executor butuh path lokal
+    if not loadedObjs and raw and writefile and customAsset then
         pcall(function()
-            local objs = game:GetObjects("rbxasset://" .. filePath:gsub("\\", "/"))
-            if objs and #objs > 0 then loadedObjs = objs end
-        end)
-    end
-
-    if not loadedObjs and data and writefile and customAsset then
-        pcall(function()
-            local tmp = "mchlern_tmp_" .. fileName
-            writefile(tmp, data)
-            local url2 = customAsset(tmp)
-            if url2 then
-                local objs2 = game:GetObjects(url2)
-                if objs2 and #objs2 > 0 then loadedObjs = objs2 end
+            local tmpName = "forkt_tmp_" .. fileData.name
+            writefile(tmpName, raw)
+            local tmpUrl = customAsset(tmpName)
+            if tmpUrl then
+                local ok2, res2 = pcall(function() return game:GetObjects(tmpUrl) end)
+                if ok2 and res2 and #res2 > 0 then loadedObjs = res2 end
             end
-            pcall(function() if delfile then delfile(tmp) end end)
+            pcall(function() if delfile then delfile(tmpName) end end)
         end)
     end
 
     if not loadedObjs or #loadedObjs == 0 then
-        return false, isPlace and "GetObjects gagal membaca .rbxl" or "GetObjects gagal membaca .rbxm"
-    end
-
-    -- Siapkan Folder Target di Workspace
-    local cleanName = fileName:gsub("%.[^%.]+$", "")
-    local importFolder = Instance.new("Folder")
-    importFolder.Name = "Imported_" .. cleanName
-    importFolder:SetAttribute("MCHLERN_IMPORT", true)
-    importFolder:SetAttribute("SourcePath", filePath)
-    importFolder.Parent = Workspace
-
-    local count = 0
-    local serviceMap = {
-        Workspace         = importFolder,
-        workspace         = importFolder,
-        ReplicatedStorage = ReplicatedStorage,
-        Lighting          = game:GetService("Lighting"),
-        StarterGui        = game:GetService("StarterGui")
-    }
-
-    local function setupSingleObj(o)
-        applyStudioLiteProps(o)
-        positionAndAnchorAsset(o)
-        loadAssetsToSLServer(o)
-
-        local sList = {}
-        if o:IsA("LuaSourceContainer") then table.insert(sList, o) end
-        for _, d in ipairs(o:GetDescendants()) do
-            if d:IsA("LuaSourceContainer") then table.insert(sList, d) end
-        end
-
-        for _, scr in ipairs(sList) do
-            local src = parsedSources[scr.ClassName .. ":" .. scr.Name] or parsedSources[scr.Name] or scr.Source
-            recreateScriptAsNative(scr, stripRichText(src or "-- Script"))
+        if isPlace then
+            return false, "RBXL terdeteksi tetapi executor tidak mengembalikan Instance dari game:GetObjects(). Pastikan Delta mendukung getcustomasset untuk file .rbxl."
+        else
+            return false, "Delta gagal membuat Instance dari file ini. Coba pastikan file valid dan getcustomasset/game:GetObjects mendukung format tersebut."
         end
     end
 
-    for _, obj in ipairs(loadedObjs) do
-        if typeof(obj) == "Instance" then
-            if obj:IsA("DataModel") then
-                -- RBXL Mode: Unpack Services
-                for _, svc in ipairs(obj:GetChildren()) do
-                    local target = serviceMap[svc.Name] or importFolder
-                    for _, child in ipairs(svc:GetChildren()) do
-                        child.Parent = target
-                        setupSingleObj(child)
-                        count = count + 1
-                    end
-                    task.wait(0)
-                end
-            else
-                -- Normal RBXM Mode
-                obj.Parent = importFolder
-                setupSingleObj(obj)
-                count = count + 1
-            end
-        end
+    -- Buat folder pembungkus & distribusikan (createFolder + runProtected14)
+    local placeFolder = createForktFolder(fileData)
+    local totalLoaded = runProtected14(loadedObjs, placeFolder, rawSources)
+
+    if totalLoaded <= 0 then
+        return false, "0 objects loaded"
     end
 
-    return true, string.format("%d object berhasil di-import!", count)
+    return true, string.format("%d object(s) loaded [%s]", totalLoaded, formatType)
 end
 
 -- =====================================================
--- 7. GUI CREATION (FORKT AESTHETIC & NON-DRAGGABLE LEFT TOGGLE)
+-- 4. GUI CREATION (FORKT AESTHETIC & NON-DRAGGABLE LEFT TOGGLE)
 -- =====================================================
 
 local ScreenGui = Instance.new("ScreenGui")
@@ -877,7 +635,7 @@ local BrandSub = Instance.new("TextLabel", Sidebar)
 BrandSub.Size = UDim2.new(1, -55, 0, 14)
 BrandSub.Position = UDim2.fromOffset(50, 31)
 BrandSub.BackgroundTransparency = 1
-BrandSub.Text = "Studio Lite v7.1"
+BrandSub.Text = "Studio Lite v3.8 PRO"
 BrandSub.Font = Enum.Font.GothamMedium
 BrandSub.TextSize = 9
 BrandSub.TextColor3 = Colors.TextMuted
@@ -996,7 +754,7 @@ local function createStatCard(posX, label, defVal)
 end
 
 local StatTotalLbl = createStatCard(0, "TOTAL ASSETS", "0")
-local StatReadyLbl = createStatCard(0.52, "CORE ENGINE", "MCHLERN v7.1")
+local StatReadyLbl = createStatCard(0.52, "CORE ENGINE", "FORKT NATIVE")
 
 -- Filter Bar (ALL, MODEL, PLACE)
 local CurrentFilter = "ALL"
@@ -1028,7 +786,7 @@ local btnAll   = createFilterButton("ALL", 1, "ALL")
 local btnModel = createFilterButton("MODEL (.rbxm)", 2, "MODEL")
 local btnPlace = createFilterButton("PLACE (.rbxl)", 3, "PLACE")
 
--- Asset Scroll List (CanvasSize Dihitung Manual Supaya Tidak Hilang di HP!)
+-- Asset Scroll List (CanvasSize Real-Time Update)
 local AssetScroll = Instance.new("ScrollingFrame", AssetsView)
 AssetScroll.Size = UDim2.new(1, 0, 1, -122)
 AssetScroll.Position = UDim2.fromOffset(0, 120)
@@ -1041,7 +799,6 @@ local ScrollLayout = Instance.new("UIListLayout", AssetScroll)
 ScrollLayout.Padding = UDim.new(0, 8)
 ScrollLayout.SortOrder = Enum.SortOrder.LayoutOrder
 
--- UPDATE CANVASSIZE SECARA MANUAL
 ScrollLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
     AssetScroll.CanvasSize = UDim2.new(0, 0, 0, ScrollLayout.AbsoluteContentSize.Y + 25)
 end)
@@ -1225,7 +982,6 @@ createTabButton("Assets", Icons.Folder, AssetsView)
 createTabButton("System Info", Icons.Dashboard, InfoView)
 createTabButton("Settings", Icons.Settings, SettingsView)
 
--- Default Active Tab
 if Tabs["Assets"] then
     Tabs["Assets"].View.Visible = true
     Tabs["Assets"].Bar.Size = UDim2.new(0, 3, 0, 18)
@@ -1294,7 +1050,7 @@ local function renderAssetItem(fileData)
     pathLbl.TextXAlignment = Enum.TextXAlignment.Left
     pathLbl.TextTruncate = Enum.TextTruncate.AtEnd
 
-    -- Import Button
+    -- Import Button (Menggunakan runForktImport 1:1 FORKT Engine)
     local importBtn = Instance.new("TextButton", itemFrame)
     importBtn.Size = UDim2.fromOffset(70, 28)
     importBtn.Position = UDim2.new(1, -78, 0.5, -14)
@@ -1311,7 +1067,7 @@ local function renderAssetItem(fileData)
         importBtn.BackgroundColor3 = Colors.PrimaryDark
 
         task.spawn(function()
-            local success, msg = smartInsertAsset(fileData)
+            local success, msg = runForktImport(fileData)
             if success then
                 importBtn.Text = "DONE"
                 importBtn.BackgroundColor3 = Colors.Success
@@ -1360,7 +1116,6 @@ local function performScan()
     isScanning = true
     RescanLbl.Text = "Scanning..."
 
-    -- Bersihkan list lama
     for _, child in ipairs(AssetScroll:GetChildren()) do
         if child:IsA("Frame") then child:Destroy() end
     end
@@ -1390,6 +1145,6 @@ end
 
 RescanBtn.MouseButton1Click:Connect(performScan)
 
--- Jalankan scan pertama kali saat script dijalankan
+-- Initial Auto Scan on Startup
 task.defer(performScan)
-showToast("FORKT Importer", "Engine MCHLERN v7.1 siap digunakan di Studio Lite!", false)
+showToast("FORKT Importer", "Engine FORKT v3.8 PRO siap digunakan di Studio Lite!", false)
